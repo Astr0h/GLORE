@@ -32,10 +32,12 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 ## Always available
 - **Player:** synced multi-layer playback, mute/solo/volume per layer, click-to-seek waveforms, Space = play/pause.
 - **Monitor mode:** Headphones (flat) / Sound System (low-end lift, tamed presence, safety compressor). Playback only.
-- **Genre Packs:** LoRA + arrangement template + BPM range + drum/chop style + mix preset, swappable.
-  - *Emotive House* — UK garage/house drums, pitched/filtered vocal chops, emotional chords, ~128–134 BPM. Intro → Build → Drop → Break → Drop → Outro.
-  - *Melodic Rap* — 808s, ambient pads, rolling hats, half-time feel, ~140–160 BPM. Intro → Hook → Verse → Hook → Verse → Hook → Outro.
-  - Each LoRA needs ~30–100 reference tracks in that style.
+- **Genre Packs** (one LoRA each; LoRA + arrangement template + BPM range + drum/chop style + mix preset):
+  - *House* — hype sets and introspective, beautiful tracks (Fred again.. lane). UK garage/house drums, pitched/filtered vocal chops, emotional chords, ~128–134 BPM.
+  - *R&B / Melodic Rap* — Drake-lane: 808s, ambient pads, rolling hats, half-time feel, ~140–160 BPM.
+  - *Gospel / Soul* — ethereal, gospel and soul-sample beats (Kanye lane): choirs, chopped soul samples, organ, warm drums.
+  - Mood tags inside each pack (e.g. hype vs introspective) steer the prompt.
+  - Each LoRA needs ~30–100 reference tracks in that style. No Suno (or other AI-service) output in training sets: their terms forbid it.
 
 ## Architecture
 - `app/` — Electron desktop shell + UI (plain HTML/CSS/JS; theme in CSS variables).

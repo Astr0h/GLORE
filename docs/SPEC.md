@@ -1,6 +1,6 @@
 # GLORE — locked spec
 
-*Glór* (Irish): voice. A local Windows app that builds tracks around **your own** vocals and samples, running on an RTX 4090.
+*Glór* (Irish): voice. A local Windows app that builds tracks around **your own** vocals and samples, running locally on an NVIDIA GPU (Seos's PC: RTX 4060, 8 GB), with heavy jobs optionally sent to a rented cloud GPU.
 
 ## Core principles
 - **The vocal is never regenerated.** AI only makes the instrumental; the original vocal is stretched/processed and mixed on top.
@@ -49,8 +49,10 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 
 ## Remote mode (laptop / phone)
 - The engine is already a separate HTTP server, so the UI can talk to an engine on another machine.
-- **Home PC:** the 4090 PC runs the engine, and the laptop/phone connects over Tailscale (private network, no open ports). Free apart from electricity.
+- **Home PC:** the home PC runs the engine, and the laptop/phone connects over Tailscale (private network, no open ports). Free apart from electricity.
 - **Cloud GPU:** the same engine in a Docker image on a rented GPU (e.g. RunPod). Models, LoRAs and projects live on a network volume, so pods can be started and stopped freely.
+- **Hybrid (default plan):** the local 4060 does everything that fits (analysis, separation, standard ACE-Step generation). Heavy jobs (LoRA training, XL generation, batch Prepare) go to the cloud GPU.
+- **Auto on/off:** GLORE starts the cloud GPU through the RunPod API when a cloud job is queued or "Connect to cloud" is pressed. The pod stops itself after N idle minutes (default 10), with a hard session cap as a safety net. The app shows live cost per session and per month, with an optional monthly spending limit.
 - Needed: an engine URL + access token setting, file upload (remote engines can't read local paths), the UI served by the engine for phone browsers, a mobile layout, and the Docker image.
 
 ## Architecture

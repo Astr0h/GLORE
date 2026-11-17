@@ -33,7 +33,7 @@ if (-not (Test-Path $Py)) {
 } else { Ok "Already exists" }
 & $Py -m pip install --upgrade pip --quiet
 
-# 3. PyTorch with CUDA (for the RTX 4090) -------------------------------
+# 3. PyTorch with CUDA (NVIDIA GPU) -------------------------------------
 Step "Installing PyTorch with CUDA (large download, ~2.5 GB, first time only)"
 $hasCuda = & $Py -c "import torch; print(torch.cuda.is_available())" 2>$null
 if ($hasCuda -ne "True") {

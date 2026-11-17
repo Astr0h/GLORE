@@ -29,7 +29,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
 ## What works right now (v0.1)
 - **Import:** drag files anywhere onto the window. GLORE auto-detects Vocal / Full song / Beat.
-- **Extract vocal:** on any full song (GPU, roughly 10–20 s per track on a 4090).
+- **Extract vocal:** on any full song (GPU, roughly 1–2 min per track on an RTX 4060).
 - **Analyse:** BPM, key, Camelot, beat grid, vocal phrases, with ½× / 2× fixes and manual overrides.
 - **Vocal Lock:** stretches the vocal to your BPM without changing pitch, with an optional pitch shift and an A/B against the original.
 - **Player:** every layer in sync, M / S / volume, click a waveform to seek, Space to play/pause.

@@ -98,7 +98,7 @@ def add_or_update(pack: str, audio_path: Path, name: str, moods: list[str], bpm=
 
 def remove(pack: str, item_id: str) -> None:
     d = pack_dir(pack)
-    for suffix in (".json", ".wav", "_train.wav"):
+    for suffix in (".json", ".wav", "_train.wav", "_vocals.wav"):
         (d / f"{item_id}{suffix}").unlink(missing_ok=True)
 
 
@@ -136,6 +136,8 @@ def prepare(pack: str, progress: Callable[[float, str], None] | None = None,
         report(base, f"Preparing {i + 1}/{len(todo)}: {it.get('name', it['id'])}")
         with tempfile.TemporaryDirectory(prefix="glore_prep_") as tmp:
             stems = separate_fn(d / f"{it['id']}.wav", tmp)
+            if "vocals" in stems:  # kept so each pack can learn its chop style later
+                shutil.copyfile(stems["vocals"], d / f"{it['id']}_vocals.wav")
             mix = None
             for name, path in stems.items():
                 if name == "vocals":

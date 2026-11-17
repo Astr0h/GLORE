@@ -158,6 +158,7 @@ def test_tagging_and_prepare(env, monkeypatch):
     assert item["prepared"] and item["training_audio"] == "instrumental"
     train = datasets.pack_dir("house") / f"{item['id']}_train.wav"
     assert train.exists()
+    assert (datasets.pack_dir("house") / f"{item['id']}_vocals.wav").exists()  # for chop-style learning
 
     # removing from the dataset clears the tag on the sample
     c.delete(f"/datasets/house/{item['id']}")

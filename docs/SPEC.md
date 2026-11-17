@@ -47,6 +47,12 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 - **8–12 GB (e.g. RTX 4060):** standard ACE-Step 1.5 (XL needs ≥12 GB with offload); separation models run with smaller chunks.
 - **LoRAs only work on the base model they were trained on**, so genre packs ship trained on the standard model (works on every tier), plus optional XL versions.
 
+## Remote mode (laptop / phone)
+- The engine is already a separate HTTP server, so the UI can talk to an engine on another machine.
+- **Home PC:** the 4090 PC runs the engine, and the laptop/phone connects over Tailscale (private network, no open ports). Free apart from electricity.
+- **Cloud GPU:** the same engine in a Docker image on a rented GPU (e.g. RunPod). Models, LoRAs and projects live on a network volume, so pods can be started and stopped freely.
+- Needed: an engine URL + access token setting, file upload (remote engines can't read local paths), the UI served by the engine for phone browsers, a mobile layout, and the Docker image.
+
 ## Architecture
 - `app/` — Electron desktop shell + UI (plain HTML/CSS/JS; theme in CSS variables).
 - `engine/` — Python engine (FastAPI on 127.0.0.1), started/stopped by the app.

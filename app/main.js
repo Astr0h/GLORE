@@ -86,6 +86,13 @@ ipcMain.handle('pick-files', async () => {
   });
   return res.canceled ? [] : res.filePaths;
 });
+ipcMain.handle('pick-csv', async () => {
+  const res = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Track list', extensions: ['csv'] }],
+  });
+  return res.canceled ? null : res.filePaths[0];
+});
 ipcMain.handle('open-log', () => logPath && shell.openPath(logPath));
 ipcMain.handle('restart-engine', async () => { stopEngine(); await startEngine(); return enginePort; });
 

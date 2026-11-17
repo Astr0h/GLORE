@@ -6,3 +6,7 @@ pedalboard>=0.9.12
 fastapi>=0.115
 uvicorn>=0.30
 demucs==4.0.1
+audio-separator[gpu]>=0.40
+audioread>=3.0
+yt-dlp>=2026.1.1
+imageio-ffmpeg>=0.5

@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('glore', {
   // Electron 32+ removed File.path; this is the supported way to get a dropped file's path
   pathForFile: (file) => webUtils.getPathForFile(file),
   pickFiles: () => ipcRenderer.invoke('pick-files'),
+  pickCsv: () => ipcRenderer.invoke('pick-csv'),
   openLog: () => ipcRenderer.invoke('open-log'),
   restartEngine: async () => { port = await ipcRenderer.invoke('restart-engine'); return port; },
   onEngineExit: (cb) => ipcRenderer.on('engine-exit', (_e, code) => cb(code)),

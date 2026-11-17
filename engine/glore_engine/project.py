@@ -14,6 +14,18 @@ from pathlib import Path
 
 KINDS = ("vocal", "full_song", "beat")
 
+# Genre packs - one LoRA each. training_audio decides what's kept when a
+# tagged track is prepared for training.
+PACKS = {
+    "house": {"label": "House", "training_audio": "instrumental", "bpm": [124, 134],
+              "moods": ["soft", "hype", "heavy", "dnb"]},
+    "rnb_rap": {"label": "R&B / Rap", "training_audio": "instrumental", "bpm": [130, 160],
+                "moods": ["late night", "moody", "melodic", "trap", "R&B", "ambient"]},
+    "gospel_soul": {"label": "Gospel / Soul", "training_audio": "keep_backing", "bpm": [70, 100],
+                    "moods": ["ethereal", "gospel", "soul sample", "choir", "uplifting", "dark"]},
+}
+LEGACY_PACKS = {"emotive_house": "house", "melodic_rap": "rnb_rap"}
+
 
 def default_root() -> Path:
     base = os.environ.get("GLORE_HOME") or os.environ.get("APPDATA") or str(Path.home())
@@ -31,6 +43,9 @@ class Source:
     analysis: dict | None = None
     overrides: dict = field(default_factory=dict)  # bpm / key set by the user
     derived_from: str | None = None  # e.g. vocal extracted from a full song
+    pack: str | None = None          # genre pack this track trains (None = not in a training set)
+    moods: list = field(default_factory=list)
+    origin: str = "file"             # file | link | extracted | raw
 
     def effective(self) -> dict:
         """Analysis with the user's overrides applied on top."""
@@ -54,7 +69,7 @@ class Project:
     bpm: float | None = None          # project tempo (follows vocal unless changed)
     bpm_locked_by_user: bool = False
     key: str | None = None
-    genre_pack: str = "emotive_house"
+    genre_pack: str = "house"
     monitor_mode: str = "headphones"  # playback only - never affects export
     step: str = "import"
     sources: list[Source] = field(default_factory=list)
@@ -85,10 +100,13 @@ class ProjectStore:
         if not self.json_path.exists():
             return Project()
         raw = json.loads(self.json_path.read_text(encoding="utf-8"))
-        raw["sources"] = [Source(**s) for s in raw.get("sources", [])]
+        src_fields = Source.__dataclass_fields__.keys()
+        raw["sources"] = [Source(**{k: v for k, v in s.items() if k in src_fields}) for s in raw.get("sources", [])]
         raw["layers"] = [Layer(**l) for l in raw.get("layers", [])]
         known = Project.__dataclass_fields__.keys()
-        return Project(**{k: v for k, v in raw.items() if k in known})
+        p = Project(**{k: v for k, v in raw.items() if k in known})
+        p.genre_pack = LEGACY_PACKS.get(p.genre_pack, p.genre_pack)
+        return p
 
     def save(self) -> None:
         with self.lock:

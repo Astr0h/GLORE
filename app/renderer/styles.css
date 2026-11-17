@@ -13,7 +13,6 @@
   --panel-3: #22201d;
   --line: rgba(255, 240, 225, 0.07);
   --line-strong: rgba(255, 240, 225, 0.13);
-  --highlight: rgba(255, 255, 255, 0.04);   /* top-edge sheen on panels */
   --text: #f4efe9;
   --dim: #8c847b;
   --faint: #5a544e;
@@ -43,7 +42,7 @@
   --radius-sm: 9px;
   --font: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
-  --shadow: 0 1px 0 var(--highlight) inset, 0 12px 32px rgba(0, 0, 0, 0.35);
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
 
 html[data-theme="steel"] {
@@ -103,10 +102,10 @@ button, input, select { font: inherit; color: inherit; }
 .num:focus, select:focus { outline: none; border-color: var(--accent); }
 select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; cursor: pointer; }
 .spacer { flex: 1; }
-.segmented { display: flex; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 3px; box-shadow: 0 1px 0 var(--highlight) inset; }
+.segmented { display: flex; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
 .segmented button { background: none; border: 0; padding: 6px 14px; border-radius: 7px; cursor: pointer; color: var(--dim); font-weight: 500; transition: color .15s, background .15s; }
 .segmented button:hover { color: var(--text); }
-.segmented button.on { background: linear-gradient(180deg, var(--accent-hi), var(--accent)); color: var(--accent-ink); font-weight: 600; box-shadow: 0 4px 14px var(--accent-glow); }
+.segmented button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; box-shadow: 0 4px 14px var(--accent-glow); }
 .gpu { font-size: 11px; color: var(--dim); font-family: var(--mono); }
 .gpu.ok::before, .gpu.warn::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
 .gpu.ok::before { background: #5fd38d; box-shadow: 0 0 8px rgba(95, 211, 141, .6); }
@@ -117,7 +116,7 @@ select { background: var(--panel-2); border: 1px solid var(--line); border-radiu
 .step { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: none; border: 0; border-radius: 10px; padding: 9px 12px; cursor: pointer; color: var(--text); font-weight: 500; transition: background .15s; }
 .step .n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 600 10.5px var(--mono); border: 1px solid var(--line-strong); color: var(--dim); }
 .step:hover { background: var(--panel); }
-.step.on { background: var(--panel-2); box-shadow: 0 1px 0 var(--highlight) inset; }
+.step.on { background: var(--panel-2); }
 .step.on::before { content: ""; position: absolute; left: -12px; top: 9px; bottom: 9px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
 .step.on .n { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .step.done:not(.on) .n { border-color: var(--accent); color: var(--accent); }
@@ -128,15 +127,15 @@ select { background: var(--panel-2); border: 1px solid var(--line); border-radiu
 main { grid-area: view; overflow-y: auto; padding: 30px 34px; }
 h1 { font-size: 26px; margin: 0 0 22px; font-weight: 600; letter-spacing: -0.02em; }
 h1[data-tip] { display: inline-block; cursor: help; }
-.panel { background: linear-gradient(180deg, var(--panel), #100f0e); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
-.btn { background: linear-gradient(180deg, var(--accent-hi), var(--accent)); color: var(--accent-ink); border: 0; border-radius: 10px; padding: 9px 18px; font-weight: 600; cursor: pointer; box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 6px 18px var(--accent-glow); transition: transform .1s, box-shadow .15s, filter .15s; }
-.btn:hover { filter: brightness(1.06); box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 8px 24px var(--accent-glow); }
+.btn { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 10px; padding: 9px 18px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px var(--accent-glow); transition: transform .1s, box-shadow .15s, filter .15s; }
+.btn:hover { background: var(--accent-hi); box-shadow: 0 8px 24px var(--accent-glow); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; cursor: default; filter: none; }
-.btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-strong); font-weight: 500; box-shadow: 0 1px 0 var(--highlight) inset; }
+.btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-strong); font-weight: 500; }
 .btn.ghost:hover { background: var(--panel-3); }
 .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--line); box-shadow: none; font-weight: 500; }
 .btn.danger:hover { border-color: rgba(255, 90, 78, .4); }
@@ -187,7 +186,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 /* ---------- transport */
 .transport { grid-area: transport; border-top: 1px solid var(--line); background: rgba(14, 13, 12, 0.92); backdrop-filter: blur(12px); padding: 12px 20px 14px; max-height: 34vh; display: flex; flex-direction: column; gap: 10px; }
 .transport-controls { display: flex; align-items: center; gap: 14px; }
-.round { width: 40px; height: 40px; border-radius: 50%; border: 0; background: linear-gradient(180deg, var(--accent-hi), var(--accent)); color: var(--accent-ink); font-size: 13px; cursor: pointer; box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 6px 18px var(--accent-glow); }
+.round { width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); font-size: 13px; cursor: pointer; box-shadow: 0 6px 18px var(--accent-glow); }
 .round.small { width: 32px; height: 32px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line-strong); font-size: 10px; box-shadow: none; }
 .time { font-family: var(--mono); font-size: 13px; font-weight: 500; }
 .meter { margin-left: auto; width: 150px; height: 4px; background: var(--panel-3); border-radius: 3px; overflow: hidden; }

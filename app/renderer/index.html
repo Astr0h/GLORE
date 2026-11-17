@@ -25,7 +25,7 @@
     <div class="top-group">
       <label>BPM</label>
       <input id="project-bpm" class="num" type="number" min="40" max="220" step="0.01" />
-      <button id="bpm-follow" class="chip" title="Go back to following the vocal's natural tempo">follow vocal</button>
+      <button id="bpm-follow" class="chip" data-tip="Go back to following the vocal's natural tempo">follow vocal</button>
     </div>
     <div class="top-group"><label>Key</label><span id="project-key" class="value">—</span></div>
     <div class="top-group">
@@ -36,11 +36,11 @@
       </select>
     </div>
     <div class="spacer"></div>
-    <div class="segmented" id="monitor-mode" title="Changes what you hear only. Exports are never affected.">
+    <div class="segmented" id="monitor-mode" data-tip="Changes what you hear only. Exports are never affected.">
       <button data-mode="headphones">Headphones</button>
       <button data-mode="sound_system">Sound System</button>
     </div>
-    <div id="gpu" class="gpu" title="Engine status"></div>
+    <div id="gpu" class="gpu" ></div>
   </header>
 
   <aside class="steps" id="steps"></aside>
@@ -49,8 +49,8 @@
 
   <footer class="transport">
     <div class="transport-controls">
-      <button id="btn-play" class="round" title="Play / pause (Space)">▶</button>
-      <button id="btn-stop" class="round small" title="Stop">■</button>
+      <button id="btn-play" class="round" data-tip="Play / pause (Space)">▶</button>
+      <button id="btn-stop" class="round small" data-tip="Stop">■</button>
       <div class="time"><span id="time-pos">0:00.0</span><span class="dim"> / </span><span id="time-dur" class="dim">0:00.0</span></div>
       <div class="meter"><div id="meter-fill"></div></div>
     </div>

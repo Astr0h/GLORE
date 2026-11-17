@@ -22,10 +22,6 @@ const LATER = {
   export: ['WAV 24-bit, MP3 320', 'MIDI from melodic stems', 'Stems ZIP for Ableton'],
 };
 
-const BPM_PRESETS = {
-  emotive_house: [128, 130, 132, 134],
-  melodic_rap: [140, 145, 150, 155, 160],
-};
 
 const KIND_LABEL = { vocal: 'Vocal', full_song: 'Full song', beat: 'Beat' };
 
@@ -163,15 +159,15 @@ function renderLayers() {
     const pl = player.layers.get(l.id);
     if (!pl) continue;
     const canvas = el('canvas');
-    const mute = el('button', { class: 'm' + (pl.muted ? ' on' : ''), title: 'Mute', onclick: () => { player.setMute(l.id, !pl.muted); renderLayers(); } }, 'M');
-    const solo = el('button', { class: 's' + (pl.solo ? ' on' : ''), title: 'Solo', onclick: () => { player.setSolo(l.id, !pl.solo); renderLayers(); } }, 'S');
-    const vol = el('input', { type: 'range', min: 0, max: 1.5, step: 0.01, value: pl.volume, title: 'Volume' });
+    const mute = el('button', { class: 'm' + (pl.muted ? ' on' : ''), 'data-tip': 'Mute', onclick: () => { player.setMute(l.id, !pl.muted); renderLayers(); } }, 'M');
+    const solo = el('button', { class: 's' + (pl.solo ? ' on' : ''), 'data-tip': 'Solo', onclick: () => { player.setSolo(l.id, !pl.solo); renderLayers(); } }, 'S');
+    const vol = el('input', { type: 'range', min: 0, max: 1.5, step: 0.01, value: pl.volume, 'data-tip': 'Volume' });
     vol.addEventListener('input', () => player.setVolume(l.id, Number(vol.value)));
-    box.append(el('div', { class: 'layer' }, el('div', { class: 'lname', title: l.name }, l.name), mute, solo, vol, canvas));
+    box.append(el('div', { class: 'layer' }, el('div', { class: 'lname', 'data-tip': l.name }, l.name), mute, solo, vol, canvas));
     const src = state.project.sources.find((x) => x.id === l.source_id);
     const isVocal = l.role === 'vocal_locked' || (l.role === 'source' && src?.kind === 'vocal') || (l.role === 'stem' && /vocals$/.test(l.id));
     const color = isVocal
-      ? getComputedStyle(document.documentElement).getPropertyValue('--wave-vocal').trim() : undefined;
+      ? cssVar('--wave-vocal') : undefined;
     const w = new Waveform(canvas, { color, onSeek: (t) => player.seek(t), duration: () => player.duration() });
     w.set({ buffer: pl.buffer });
     state.layerWaves.set(l.id, w);
@@ -321,32 +317,28 @@ function sampleFacts(s) {
 
 function viewImport(view) {
   const p = state.project;
-  view.append(
-    el('h1', {}, 'Import'),
-    el('p', { class: 'sub' }, 'Drop in vocals, full songs or beats. GLORE guesses what each one is — tap to correct it.'),
-  );
-  const dz = el('div', { class: 'dropzone panel' },
-    el('strong', {}, 'Drop audio files here'),
-    'WAV · MP3 · FLAC · AIFF · OGG', el('br'), el('br'),
+  view.append(el('h1', { 'data-tip': 'Drop in vocals, full songs or beats. GLORE guesses what each one is — click a tag to correct it.' }, 'Import'));
+  const dz = el('div', { class: 'dropzone panel', 'data-tip': 'WAV · MP3 · FLAC · AIFF · OGG' },
+    el('strong', {}, 'Drop audio here'),
     el('button', { class: 'btn ghost', onclick: async () => importPaths(await window.glore.pickFiles()) }, 'Browse…'));
   view.append(dz);
 
   if (p.sources.length) {
     const list = el('div', { class: 'panel' });
     for (const s of p.sources) {
+      const auto = s.analysis && !s.derived_from && s.analysis.kind_guess === s.kind;
       const kinds = el('div', { class: 'row' },
         ...Object.entries(KIND_LABEL).map(([k, label]) => el('button', {
           class: `chip${k === 'vocal' ? ' vocal' : ''}${s.kind === k ? ' on' : ''}`,
+          'data-tip': s.kind === k && auto ? 'Auto-detected' : null,
           onclick: async () => {
             if (s.kind === k) return;
             try { const r = await api(`/sources/${s.id}/kind`, { method: 'POST', body: { kind: k } }); trackJob(s.id, r.job_id); } catch (e) { toast(e.message, true); }
           },
-        }, label)),
-        s.analysis && !s.derived_from && s.analysis.kind_guess === s.kind ? el('span', { class: 'badge' }, 'auto-detected') : null,
-      );
+        }, label)));
       const actions = el('div', { class: 'row' },
         s.kind === 'full_song' && !state.jobs[s.id] ? el('button', {
-          class: 'btn small', title: 'Pulls the acapella out with Demucs (GPU)',
+          class: 'btn small', 'data-tip': 'Pulls the acapella out on your GPU. The other stems land in the layer list.',
           onclick: () => extractVocal(s),
         }, 'Extract vocal') : null,
         el('button', { class: 'btn small ghost', onclick: () => { soloOnly(`src-${s.id}`); player.play(0); } }, 'Preview'),
@@ -355,14 +347,14 @@ function viewImport(view) {
       const canvas = el('canvas');
       list.append(el('div', { class: 'sample' },
         el('div', {},
-          el('div', { class: 'name' }, s.name, s.derived_from ? el('span', { class: 'badge', style: 'margin-left:8px' }, 'extracted') : null),
+          el('div', { class: 'name' }, s.name, s.derived_from ? el('span', { class: 'badge', style: 'margin-left:8px', 'data-tip': 'Extracted from a full song' }, 'extracted') : null),
           el('div', { class: 'facts' }, sampleFacts(s)),
           el('div', { style: 'margin-top:8px' }, kinds),
           jobStatus(s.id)),
         actions, canvas));
       const pl = player.layers.get(`src-${s.id}`);
       if (pl) {
-        const w = new Waveform(canvas, { color: s.kind === 'vocal' ? getComputedStyle(document.documentElement).getPropertyValue('--wave-vocal').trim() : undefined, onSeek: (t) => player.seek(t) });
+        const w = new Waveform(canvas, { color: s.kind === 'vocal' ? cssVar('--wave-vocal') : undefined, onSeek: (t) => player.seek(t) });
         w.set({ buffer: pl.buffer, phrases: s.analysis?.phrases || [] });
         state.viewWaves.push(w);
       }
@@ -371,21 +363,21 @@ function viewImport(view) {
   }
 }
 
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
 async function extractVocal(s) {
   try {
     const r = await api(`/sources/${s.id}/extract-vocal`, { method: 'POST' });
-    toast('Extracting vocal — first run downloads the model (~300 MB)');
     await trackJob(s.id, r.job_id);
-    toast('Vocal extracted. Stems are in the layer list.');
+    toast('Vocal extracted');
   } catch (e) { toast(e.message, true); }
 }
 
 // ---------- 2. Analyse
 function viewAnalyse(view) {
   const p = state.project;
-  view.append(el('h1', {}, 'Analyse'),
-    el('p', { class: 'sub' }, 'Best guesses for tempo and key. If one looks wrong, correct it — everything later uses these numbers.'));
-  if (!p.sources.length) { view.append(el('div', { class: 'panel' }, 'Import a sample first.')); return; }
+  view.append(el('h1', { 'data-tip': 'Best guesses for tempo and key. Correct anything that looks wrong — every later step uses these numbers.' }, 'Analyse'));
+  if (!p.sources.length) { view.append(el('div', { class: 'panel dim' }, 'Import a sample first.')); return; }
 
   view.append(el('div', { class: 'tabs' }, ...p.sources.map((s) => el('button', {
     class: `chip${s.kind === 'vocal' ? ' vocal' : ''}${state.selected === s.id ? ' on' : ''}`,
@@ -398,17 +390,18 @@ function viewAnalyse(view) {
   if (!a) { view.append(el('div', { class: 'panel' }, jobStatus(s.id) || 'Analysing…')); return; }
   const eff = { ...a, ...s.overrides };
 
-  const canvas = el('canvas', { class: 'big-wave' });
-  view.append(el('div', { class: 'panel' },
-    canvas,
+  const canvas = el('canvas', {
+    class: 'big-wave',
+    'data-tip': s.kind === 'vocal'
+      ? `${a.phrases.length} phrases (shaded). Bright lines = bars, faint = beats. Click to jump.`
+      : 'Bright lines = bars, faint = beats. Click to jump.',
+  });
+  view.append(el('div', { class: 'panel' }, canvas,
     el('div', { class: 'row', style: 'margin-top:10px' },
-      el('button', { class: 'btn small ghost', onclick: () => { soloOnly(`src-${s.id}`); player.play(0); } }, '▶ Play this sample'),
-      el('span', { class: 'dim' }, s.kind === 'vocal'
-        ? `${a.phrases.length} phrases detected (shaded) · bar lines from the beat grid`
-        : 'Bright lines = bar starts, faint lines = beats'))));
+      el('button', { class: 'btn small ghost', onclick: () => { soloOnly(`src-${s.id}`); player.play(0); } }, '▶ Play'))));
   const pl = player.layers.get(`src-${s.id}`);
   if (pl) {
-    const w = new Waveform(canvas, { color: s.kind === 'vocal' ? getComputedStyle(document.documentElement).getPropertyValue('--wave-vocal').trim() : undefined, onSeek: (t) => player.seek(t) });
+    const w = new Waveform(canvas, { color: s.kind === 'vocal' ? cssVar('--wave-vocal') : undefined, onSeek: (t) => player.seek(t) });
     w.set({ buffer: pl.buffer, beats: eff.beats || [], downbeats: eff.downbeats || [], phrases: a.phrases || [] });
     state.viewWaves.push(w);
   }
@@ -417,77 +410,66 @@ function viewAnalyse(view) {
     try { await api(`/sources/${s.id}/analysis`, { method: 'PATCH', body }); await refresh(); } catch (e) { toast(e.message, true); }
   };
 
-  const bpmInput = el('input', { type: 'number', step: '0.01', value: eff.bpm });
+  let tempoTip = 'Type a BPM to override.';
+  if (s.derived_from) tempoTip = "Taken from the original song (more reliable than the acapella). Type to override.";
+  else if (s.kind === 'vocal') tempoTip = 'Acapellas have no drums, so tempo is harder to read. If it feels off, try half or double. Type to override.';
+  const bpmInput = el('input', { type: 'number', step: '0.01', value: eff.bpm, class: 'big-input', 'data-tip': tempoTip });
   bpmInput.addEventListener('change', () => override({ bpm: Number(bpmInput.value) }));
-  const keyInput = el('input', { value: eff.key, placeholder: 'e.g. A minor' });
+  const keyInput = el('input', { value: eff.key, class: 'big-input', 'data-tip': 'Type a key to override, e.g. "A minor", "F#", "Bbm".' });
   keyInput.addEventListener('change', () => override({ key: keyInput.value }));
 
-  const confBar = (v) => el('div', { class: 'conf', title: `confidence ${Math.round(v * 100)}%` }, el('div', { style: `width:${v * 100}%` }));
+  const confBar = (v, isSet) => isSet
+    ? el('span', { class: 'badge' }, 'set by you')
+    : el('div', { class: 'conf', 'data-tip': `Detection confidence: ${Math.round(v * 100)}%` }, el('div', { style: `width:${v * 100}%` }));
   view.append(el('div', { class: 'grid2' },
     el('div', { class: 'panel stat' },
-      el('span', { class: 'label' }, 'Tempo'),
-      el('span', { class: 'big' }, `${eff.bpm}`),
-      s.overrides.bpm ? el('span', { class: 'badge' }, 'set by you') : confBar(a.bpm_confidence),
-      el('div', { class: 'row' }, ...a.bpm_candidates.filter((c) => c !== eff.bpm).map((c) =>
-        el('button', { class: 'chip', onclick: () => override({ bpm: c }) }, `${c}`))),
-      el('div', { class: 'field' }, el('span', { class: 'dim' }, 'Set:'), bpmInput),
-      s.kind === 'vocal' && !s.derived_from ? el('span', { class: 'dim' }, 'Acapellas have no drums, so tempo is a harder guess. If it feels off, try ½ or 2×.') : null,
-      s.derived_from ? el('span', { class: 'dim' }, "Taken from the original song's analysis (more reliable).") : null),
+      el('span', { class: 'label' }, 'Tempo'), bpmInput, confBar(a.bpm_confidence, !!s.overrides.bpm)),
     el('div', { class: 'panel stat' },
-      el('span', { class: 'label' }, 'Key'),
-      el('span', { class: 'big' }, eff.key),
-      el('span', { class: 'dim' }, `Camelot ${eff.camelot}`),
-      s.overrides.key ? el('span', { class: 'badge' }, 'set by you') : confBar(a.key_confidence),
-      el('div', { class: 'field' }, el('span', { class: 'dim' }, 'Set:'), keyInput),
-      el('div', { class: 'row' },
-        el('button', { class: 'btn small ghost', onclick: () => override({ clear: true }) }, 'Reset to detected'),
-        el('button', { class: 'btn small ghost', onclick: async () => { const r = await api(`/sources/${s.id}/analyse`, { method: 'POST' }); trackJob(s.id, r.job_id); } }, 'Re-analyse')))));
-
-  if (p.sources.some((x) => x.kind === 'vocal')) view.append(nextButton('lock', 'Vocal Lock'));
+      el('span', { class: 'label' }, 'Key'), keyInput,
+      el('span', { class: 'dim', 'data-tip': 'Camelot wheel code — neighbouring numbers mix well together.' }, `Camelot ${eff.camelot}`),
+      confBar(a.key_confidence, !!s.overrides.key))));
+  view.append(el('div', { class: 'row' },
+    p.sources.some((x) => x.kind === 'vocal') ? nextButton('lock', 'Vocal Lock') : null,
+    el('button', { class: 'btn ghost', onclick: () => override({ clear: true }), 'data-tip': 'Undo your tempo/key edits for this sample' }, 'Reset'),
+    el('button', { class: 'btn ghost', onclick: async () => { const r = await api(`/sources/${s.id}/analyse`, { method: 'POST' }); trackJob(s.id, r.job_id); } }, 'Re-analyse')));
 }
 
 // ---------- 3. Vocal lock
 function viewLock(view) {
   const p = state.project;
-  view.append(el('h1', {}, 'Vocal Lock'),
-    el('p', { class: 'sub' }, 'Your vocal is never regenerated. It is only stretched onto the project tempo — the pitch stays exactly as recorded unless you choose to shift it.'));
+  view.append(el('h1', { 'data-tip': 'Your vocal is never regenerated — only stretched onto the project tempo. Pitch stays as recorded unless you shift it.' }, 'Vocal Lock'));
   const vocals = p.sources.filter((s) => s.kind === 'vocal' && s.analysis);
   if (!vocals.length) {
-    view.append(el('div', { class: 'panel' }, 'No vocal yet. Import an acapella, or use "Extract vocal" on a full song in Import.'));
+    view.append(el('div', { class: 'panel dim' }, 'No vocal yet — import an acapella or extract one from a full song.'));
     return;
   }
-  let src = vocals.find((v) => v.id === (state.lockSource || p.vocal_lock?.source_id)) || vocals[0];
+  const src = vocals.find((v) => v.id === (state.lockSource || p.vocal_lock?.source_id)) || vocals[0];
   const eff = { ...src.analysis, ...src.overrides };
   const target = { bpm: p.bpm || eff.bpm, pitch: p.vocal_lock?.source_id === src.id ? p.vocal_lock.pitch_semitones : 0 };
 
   const sel = el('select', {}, ...vocals.map((v) => el('option', { value: v.id, selected: v.id === src.id }, v.name)));
   sel.addEventListener('change', () => { state.lockSource = sel.value; render(); });
 
-  const bpmIn = el('input', { type: 'number', step: '0.01', value: target.bpm });
-  const ratio = el('span', { class: 'dim' });
+  const bpmIn = el('input', { type: 'number', step: '0.01', value: target.bpm, class: 'big-input' });
+  const warn = el('span', { class: 'warn' });
   const updateRatio = () => {
     const r = Number(bpmIn.value) / eff.bpm;
-    ratio.textContent = `${eff.bpm} → ${bpmIn.value} BPM · ${(r * 100).toFixed(1)}% speed` + (r < 0.5 || r > 2 ? ' — too far, try ½ or 2×' : '');
+    bpmIn.dataset.tip = `${eff.bpm} → ${bpmIn.value} BPM (${(r * 100).toFixed(1)}% speed)`;
+    warn.textContent = r < 0.5 || r > 2 ? 'Too big a jump — try half or double' : '';
   };
   bpmIn.addEventListener('input', updateRatio);
   updateRatio();
 
   const NOTE = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-  const pitch = el('input', { type: 'range', min: -12, max: 12, step: 1, value: target.pitch });
-  const pitchLabel = el('span', { class: 'dim' });
+  const pitch = el('input', { type: 'range', min: -12, max: 12, step: 1, value: target.pitch, 'data-tip': 'Formants are preserved, so the voice keeps its character.' });
+  const pitchLabel = el('span', { class: 'dim mono' });
   const updatePitch = () => {
     const n = Number(pitch.value);
     const newKey = `${NOTE[((eff.key_tonic + n) % 12 + 12) % 12]} ${eff.key_mode}`;
-    pitchLabel.textContent = n === 0 ? `Off — stays in ${eff.key}` : `${n > 0 ? '+' : ''}${n} semitones → ${newKey}`;
+    pitchLabel.textContent = n === 0 ? `0 · ${eff.key}` : `${n > 0 ? '+' : ''}${n} · ${newKey}`;
   };
   pitch.addEventListener('input', updatePitch);
   updatePitch();
-
-  const presets = BPM_PRESETS[p.genre_pack] || [];
-  const presetRow = el('div', { class: 'row' },
-    el('button', { class: 'chip', onclick: () => { bpmIn.value = eff.bpm; updateRatio(); } }, `Natural ${eff.bpm}`),
-    ...presets.map((b) => el('button', { class: 'chip', onclick: () => { bpmIn.value = b; updateRatio(); } }, String(b))),
-    el('span', { class: 'dim' }, p.genre_pack === 'melodic_rap' ? 'Melodic Rap range' : 'Emotive House range'));
 
   const job = state.lockJob;
   const lockBtn = el('button', {
@@ -507,43 +489,67 @@ function viewLock(view) {
         toast('Vocal locked');
       } catch (e) { state.lockJob = null; render(); toast(e.message, true); }
     },
-  }, job ? `${job.message}…` : (p.vocal_lock ? 'Re-lock vocal' : 'Lock vocal'));
+  }, job ? `${job.message}…` : (p.vocal_lock ? 'Re-lock' : 'Lock vocal'));
 
   view.append(el('div', { class: 'panel' },
-    el('div', { class: 'row' }, el('span', { class: 'dim' }, 'Vocal:'), sel, el('span', { class: 'dim' }, `${eff.key} · ${eff.bpm} BPM natural`)),
+    el('div', { class: 'row' }, sel, el('span', { class: 'dim mono' }, `${eff.key} · ${eff.bpm} BPM`)),
     el('div', { class: 'grid2', style: 'margin-top:16px' },
-      el('div', { class: 'stat' }, el('span', { class: 'label' }, 'Target tempo'), el('div', { class: 'field' }, bpmIn), presetRow, ratio),
-      el('div', { class: 'stat' }, el('span', { class: 'label' }, 'Pitch (optional)'), pitch, pitchLabel,
-        el('span', { class: 'dim' }, 'Formants are preserved, so the voice keeps its character.'))),
+      el('div', { class: 'stat' }, el('span', { class: 'label' }, 'Target BPM'), bpmIn, warn),
+      el('div', { class: 'stat' }, el('span', { class: 'label' }, 'Pitch'), pitch, pitchLabel)),
     el('div', { class: 'row', style: 'margin-top:16px' }, lockBtn)));
 
   if (p.vocal_lock && player.has('vocal-locked')) {
     const canvas = el('canvas', { class: 'big-wave' });
     view.append(el('div', { class: 'panel' },
       el('div', { class: 'row', style: 'margin-bottom:10px' },
-        el('strong', {}, 'Locked vocal'),
-        el('span', { class: 'dim' }, `${p.vocal_lock.source_bpm} → ${p.vocal_lock.target_bpm} BPM · ${fmt(p.vocal_lock.duration)}`),
-        el('div', { class: 'spacer', style: 'flex:1' }),
-        el('button', { class: 'btn small ghost', onclick: () => { soloOnly(`src-${p.vocal_lock.source_id}`); player.play(0); } }, 'A · Original'),
-        el('button', { class: 'btn small', onclick: () => { soloOnly('vocal-locked'); player.play(0); } }, 'B · Locked')),
+        el('strong', {}, 'Locked'),
+        el('span', { class: 'dim mono' }, `${p.vocal_lock.source_bpm} → ${p.vocal_lock.target_bpm} BPM · ${fmt(p.vocal_lock.duration)}`),
+        el('div', { style: 'flex:1' }),
+        el('button', { class: 'btn small ghost', 'data-tip': 'Play the original', onclick: () => { soloOnly(`src-${p.vocal_lock.source_id}`); player.play(0); } }, 'A'),
+        el('button', { class: 'btn small', 'data-tip': 'Play the locked version', onclick: () => { soloOnly('vocal-locked'); player.play(0); } }, 'B')),
       canvas));
-    const w = new Waveform(canvas, { color: getComputedStyle(document.documentElement).getPropertyValue('--wave-vocal').trim(), onSeek: (t) => player.seek(t) });
+    const w = new Waveform(canvas, { color: cssVar('--wave-vocal'), onSeek: (t) => player.seek(t) });
     const beat = 60 / p.vocal_lock.target_bpm;
-    const dur = p.vocal_lock.duration;
-    const beats = []; for (let t = 0; t < dur; t += beat) beats.push(t);
+    const beats = []; for (let t = 0; t < p.vocal_lock.duration; t += beat) beats.push(t);
     w.set({ buffer: player.layers.get('vocal-locked').buffer, phrases: p.vocal_lock.phrases, beats, downbeats: beats.filter((_, i) => i % 4 === 0) });
     state.viewWaves.push(w);
-    view.append(el('p', { class: 'dim' }, 'Next session: Arrange — GLORE places these phrases into the song structure for you.'));
   }
 }
 
 // ---------- later steps
 function viewLater(view) {
   const s = STEPS.find((x) => x.id === state.step);
-  view.append(el('h1', {}, s.label), el('p', { class: 'sub' }, 'Coming in a later build session.'),
-    el('div', { class: 'panel later-card' }, el('strong', {}, 'What this step will do'),
+  view.append(el('h1', {}, s.label),
+    el('div', { class: 'panel later-card' }, el('span', { class: 'badge' }, 'Coming soon'),
       el('ul', {}, ...(LATER[s.id] || []).map((t) => el('li', {}, t)))));
 }
+
+// ------------------------------------------------------------------ hover tips
+// Any element with data-tip gets a small popup on hover instead of on-screen text.
+const tipEl = el('div', { class: 'tip hidden' });
+document.body.append(tipEl);
+let tipTimer = null;
+let tipTarget = null;
+document.addEventListener('mouseover', (e) => {
+  const t = e.target.closest('[data-tip]');
+  if (t === tipTarget) return;
+  tipTarget = t;
+  clearTimeout(tipTimer);
+  tipEl.classList.add('hidden');
+  if (!t || !t.dataset.tip) return;
+  tipTimer = setTimeout(() => {
+    tipEl.textContent = t.dataset.tip;
+    tipEl.classList.remove('hidden');
+    const r = t.getBoundingClientRect();
+    const tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+    let x = Math.min(Math.max(8, r.left + r.width / 2 - tw / 2), window.innerWidth - tw - 8);
+    let y = r.bottom + 8;
+    if (y + th > window.innerHeight - 8) y = r.top - th - 8;
+    tipEl.style.left = `${x}px`;
+    tipEl.style.top = `${y}px`;
+  }, 400);
+});
+document.addEventListener('mousedown', () => { clearTimeout(tipTimer); tipEl.classList.add('hidden'); });
 
 // ------------------------------------------------------------------ drag & drop anywhere
 let dragDepth = 0;

@@ -7,6 +7,7 @@
 - **Step-by-step flow** — approve each stage, jump back to any step without losing work.
 - **Everything local.** Nothing leaves the machine.
 - **Monitoring mode changes what you hear, never what you export.**
+- **UI: no on-screen explanations.** Anything that needs explaining gets a hover tip. Typed inputs instead of preset buttons; sliders where a range makes sense (e.g. pitch).
 
 ## Flow
 Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal FX → Mix → Export
@@ -14,6 +15,9 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 | # | Step | What it does |
 |---|------|--------------|
 | 1 | **Import** | Drag & drop WAV/MP3/FLAC/AIFF/OGG. Auto-tags each as Vocal / Full song / Beat; user confirms. Full songs → "Extract vocal" (Demucs HTDemucs FT). |
+| 1b | **Link import** | Paste a YouTube / SoundCloud link → audio pulled with yt-dlp. Spotify / Apple Music links are DRM-protected, so GLORE reads the track's metadata and finds the matching audio on YouTube (the spotDL approach). |
+| 1c | **Genre tag → LoRA dataset** | On import, optionally tag a track with a genre pack. Tagged tracks are added to that pack's training set; once it's big enough (~30+), "Train LoRA" fine-tunes ACE-Step for that pack. |
+| 1d | **Raw vocal** | After extraction, an optional GPU clean-up chain: de-reverb → de-echo/delay → lead vs backing/doubles split → de-noise (UVR-style Roformer/MDX models via audio-separator). Result: a dry, raw-sounding lead. Each stage can be toggled. Pitch correction (autotune) can't be truly undone, only softened. |
 | 2 | **Analyse** | BPM, key (+Camelot), beat grid, bar starts, vocal phrases. All overridable. Extracted vocals inherit tempo/key from the full mix. |
 | 3 | **Vocal Lock** | Time-stretch vocal to project BPM, pitch unchanged (Rubber Band, formant-preserving). Optional ±12 semitone shift, off by default. Project BPM follows the vocal's natural tempo until changed. |
 | 4 | **Arrange** | Auto-places vocal by analysis (hook vs verse from repetition/energy) into the genre pack's template. Blocks are draggable/cuttable/duplicable. |
@@ -37,5 +41,5 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 - Projects saved in `%APPDATA%\GLORE\projects\`.
 
 ## Build log
-- **Session 1** (2026-11-17): Engine, desktop app, Import, Analyse, Extract vocal, Vocal Lock, player, monitor modes, Windows setup.
-- Next: Arrange → Chops (incl. select-to-loop) → Vocal FX → Mix → Export → Generate (ACE-Step) → LoRA training → installer (.exe).
+- **Session 1** (2026-11-17): Engine, desktop app, Import, Analyse, Extract vocal, Vocal Lock, player, monitor modes, Windows setup. UI tidy: hover tips, no preset BPM buttons.
+- Next: Raw vocal + link import + genre tagging → Arrange → Chops (incl. select-to-loop) → Vocal FX → Mix → Export → Generate (ACE-Step) → LoRA training → installer (.exe).

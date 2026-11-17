@@ -79,13 +79,17 @@ class Waveform {
     // wave
     const bufW = Math.max(1, Math.floor(px(this.buffer.duration)));
     const peaks = computePeaks(this.buffer, bufW);
+    // played part full colour, the rest dimmed
     g.fillStyle = this.opts.color || css.getPropertyValue('--wave').trim();
     const mid = h / 2;
+    const head = Math.round(px(this.playhead));
     for (let x = 0; x < bufW; x++) {
       const min = peaks[x * 2], max = peaks[x * 2 + 1];
-      const y1 = mid - max * mid * 0.95, y2 = mid - min * mid * 0.95;
+      const y1 = mid - max * mid * 0.92, y2 = mid - min * mid * 0.92;
+      g.globalAlpha = this.playhead > 0 && x > head ? 0.42 : 0.95;
       g.fillRect(x, y1, 1, Math.max(1, y2 - y1));
     }
+    g.globalAlpha = 1;
 
     // playhead
     g.fillStyle = css.getPropertyValue('--playhead').trim();

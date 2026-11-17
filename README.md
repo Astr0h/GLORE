@@ -2,7 +2,7 @@
 
 *Glór* — voice. Build house and melodic rap tracks around your own vocals and samples, locally on your GPU.
 
-Full feature spec: [docs/SPEC.md](docs/SPEC.md)
+Full feature spec: [docs/SPEC.md](docs/SPEC.md) · Status and next steps: [docs/HANDOFF.md](docs/HANDOFF.md)
 
 ## First-time setup (Windows)
 

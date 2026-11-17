@@ -13,19 +13,14 @@ You need **Python 3.12**, **Node.js LTS**, **Git**, and an up-to-date **NVIDIA d
    git clone https://github.com/Astr0h/GLORE.git
    cd GLORE
    ```
-2. Run setup (takes a while the first time, since it downloads ~3 GB of PyTorch and models):
-   ```
-   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
-   ```
-   It ends with a self-test. Green = good. If anything goes red, copy the error text to Claude.
-3. Launch: double-click **`Start GLORE.bat`**.
+2. Double-click **`Setup GLORE.bat`** in the GLORE folder. It takes a while the first time, since it downloads ~3 GB of PyTorch and models. It ends with a self-test and waits for you to press Enter. Everything it prints is also saved to `setup.log`; if anything goes red, send that file to Claude.
+3. Launch: double-click **`Start GLORE.bat`**. If setup hasn't finished, it runs setup for you first.
 
 ## Updating after a new build session
 ```
 git pull
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 ```
-(Setup skips what's already installed, so re-running it is quick.)
+Then double-click `Setup GLORE.bat` again. It skips what's already installed, so re-running it is quick.
 
 ## What works right now (v0.1)
 - **Import:** drag files anywhere onto the window. GLORE auto-detects Vocal / Full song / Beat.

@@ -37,6 +37,7 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
   - *R&B / Melodic Rap* — Drake-lane: 808s, ambient pads, rolling hats, half-time feel, ~140–160 BPM.
   - *Gospel / Soul* — ethereal, gospel and soul-sample beats (Kanye lane): choirs, chopped soul samples, organ, warm drums.
   - Mood tags inside each pack (e.g. hype vs introspective) steer the prompt.
+  - **Training audio per pack:** import full songs; GLORE splits them automatically. House and R&B/Rap train on *instrumental only* (all vocals removed). Gospel/Soul uses *keep backing vocals*: the lead is removed, choirs/hums/ad-lib pads stay, so it can generate those textures but never a lead vocal.
   - Each LoRA needs ~30–100 reference tracks in that style. No Suno (or other AI-service) output in training sets: their terms forbid it.
 
 ## Architecture

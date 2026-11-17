@@ -7,7 +7,7 @@
 
 :root {
   --bg: #0a0908;
-  --bg-glow: rgba(255, 106, 0, 0.06);
+  --bg-glow: rgba(255, 143, 61, 0.06);
   --panel: #121110;
   --panel-2: #1a1816;
   --panel-3: #22201d;
@@ -17,11 +17,11 @@
   --dim: #8c847b;
   --faint: #5a544e;
 
-  --accent: #ff6a00;           /* GLORE orange */
-  --accent-hi: #ff8f3d;
+  --accent: #ff8f3d;           /* GLORE orange */
+  --accent-hi: #ffa45e;        /* hover */
   --accent-ink: #1a0b00;       /* text on orange */
-  --accent-soft: rgba(255, 106, 0, 0.12);
-  --accent-glow: rgba(255, 106, 0, 0.35);
+  --accent-soft: rgba(255, 143, 61, 0.13);
+  --accent-glow: rgba(255, 143, 61, 0.35);
 
   --second: #efe3d0;           /* ivory */
   --second-soft: rgba(239, 227, 208, 0.10);

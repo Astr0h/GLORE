@@ -17,7 +17,7 @@ from . import __version__
 from .analysis import analyse, parse_key, key_name, camelot
 from .audio_io import SUPPORTED_EXTENSIONS, load_stereo, save_wav, duration_seconds
 from .project import ProjectStore, Source, Layer, JobRunner, KINDS, PACKS, new_id
-from . import separation, cleanup, linkimport, datasets
+from . import separation, cleanup, linkimport, datasets, tracklist
 from .vocal_lock import lock_vocal
 
 
@@ -60,6 +60,11 @@ class RawBody(BaseModel):
 class TagBody(BaseModel):
     pack: str | None = None  # None = remove from training sets
     moods: list[str] = []
+
+
+class TrackListBody(BaseModel):
+    csv_path: str | None = None   # CSV exported from the track-list sheet
+    csv_text: str | None = None
 
 
 class LockBody(BaseModel):
@@ -243,6 +248,20 @@ def create_app(store: ProjectStore | None = None) -> FastAPI:
                 s.pack, s.moods = None, []
         S().save()
         return datasets.summary()
+
+    @app.post("/datasets/{pack}/import-list")
+    def dataset_import_list(pack: str, body: TrackListBody):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        try:
+            text = body.csv_text if body.csv_text is not None else Path(body.csv_path or "").read_text(encoding="utf-8-sig")
+            rows = tracklist.parse_csv(text)
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            raise HTTPException(400, f"Couldn't read that track list: {e}")
+        if not rows:
+            raise HTTPException(400, "No ticked tracks in that list")
+        job = app.state.jobs.start("import_list", lambda r: tracklist.import_rows(pack, rows, r).to_dict())
+        return {"job_id": job.id, "tracks": len(rows)}
 
     @app.post("/datasets/{pack}/prepare")
     def dataset_prepare(pack: str):

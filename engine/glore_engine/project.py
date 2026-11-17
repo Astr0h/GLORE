@@ -18,7 +18,7 @@ KINDS = ("vocal", "full_song", "beat")
 # tagged track is prepared for training.
 PACKS = {
     "house": {"label": "House", "training_audio": "instrumental", "bpm": [124, 134],
-              "moods": ["hype", "introspective", "euphoric", "melancholic", "garage", "rave"]},
+              "moods": ["soft", "hype", "heavy", "dnb"]},
     "rnb_rap": {"label": "R&B / Rap", "training_audio": "instrumental", "bpm": [130, 160],
                 "moods": ["late night", "moody", "melodic", "trap", "R&B", "ambient"]},
     "gospel_soul": {"label": "Gospel / Soul", "training_audio": "keep_backing", "bpm": [70, 100],

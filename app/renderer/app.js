@@ -520,7 +520,7 @@ function viewPacks(view) {
     const items = state.packItems[p.id] || [];
     const pct = Math.min(100, (p.count / p.min_tracks) * 100);
     const job = state.packJobs?.[p.id];
-    grid.append(el('div', { class: 'panel pack' },
+    grid.append(el('div', { class: 'panel pack', 'data-pack': p.id },
       el('div', { class: 'pack-head' },
         el('strong', {}, p.label),
         el('span', { class: 'badge', 'data-tip': p.training_audio === 'keep_backing' ? 'Lead vocal removed, choirs and backing vocals kept' : 'All vocals removed before training' },
@@ -540,9 +540,50 @@ function viewPacks(view) {
             'data-tip': 'Strip vocals from the tracks so they\'re ready to train on',
             onclick: () => preparePack(p.id),
           }, 'Prepare'),
-        el('button', { class: 'btn small', disabled: true, 'data-tip': 'Training arrives with the Generate step' }, 'Train LoRA'))));
+        job ? null : el('button', {
+          class: 'btn small ghost', 'data-tip': 'Download every ticked track from a track-list CSV (export it from the sheet). Tracks already in the pack are skipped.',
+          onclick: () => importTrackList(p.id),
+        }, 'Import list'),
+        el('button', { class: 'btn small', disabled: true, 'data-tip': 'Training arrives with the Generate step' }, 'Train LoRA')),
+      listReport(p.id)));
   }
   view.append(grid);
+}
+
+async function importTrackList(id) {
+  const path = await window.glore.pickCsv();
+  if (!path) return;
+  state.packJobs = state.packJobs || {};
+  state.listReports = state.listReports || {};
+  try {
+    const r = await api(`/datasets/${id}/import-list`, { method: 'POST', body: { csv_path: path } });
+    state.packJobs[id] = { progress: 0, message: `Starting ${r.tracks} tracks` };
+    render();
+    const res = await waitJob(r.job_id, (j) => { state.packJobs[id] = { progress: j.progress, message: j.message }; updatePackJob(id); });
+    state.listReports[id] = res;
+    toast(`${res.added.length} added · ${res.skipped.length} already there · ${res.failed.length} failed`, res.failed.length > 0);
+  } catch (e) { toast(e.message, true); }
+  delete state.packJobs[id];
+  await loadPacks();
+  render();
+}
+
+function updatePackJob(id) {
+  const j = state.packJobs?.[id];
+  const card = document.querySelector(`[data-pack="${id}"]`);
+  if (!j || !card) { render(); return; }
+  const bar = card.querySelector('.status .progress div');
+  const msg = card.querySelector('.status .msg');
+  if (bar) bar.style.width = (j.progress * 100) + '%';
+  if (msg) msg.textContent = j.message;
+}
+
+function listReport(id) {
+  const rep = state.listReports?.[id];
+  if (!rep || !rep.failed.length) return null;
+  return el('div', { class: 'list-report' },
+    el('span', { class: 'label', 'data-tip': 'Import these by hand with a link on the Import page, or fix the name in the sheet and run the list again.' }, `${rep.failed.length} not found`),
+    ...rep.failed.map((f) => el('div', { class: 'fail', 'data-tip': f.reason }, f.name)));
 }
 
 async function preparePack(id) {
@@ -551,7 +592,7 @@ async function preparePack(id) {
     const r = await api(`/datasets/${id}/prepare`, { method: 'POST' });
     state.packJobs[id] = { progress: 0, message: 'Starting' };
     render();
-    await waitJob(r.job_id, (j) => { state.packJobs[id] = { progress: j.progress, message: j.message }; });
+    await waitJob(r.job_id, (j) => { state.packJobs[id] = { progress: j.progress, message: j.message }; updatePackJob(id); });
   } catch (e) { toast(e.message, true); }
   delete state.packJobs[id];
   await loadPacks();

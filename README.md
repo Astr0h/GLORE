@@ -39,6 +39,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 - **Link import:** paste a YouTube, SoundCloud, Spotify or Apple Music link under the drop zone. Spotify and Apple Music are matched on YouTube.
 - **Raw vocal:** on any vocal, choose what to strip (backing vocals, echo, reverb, noise), then click *Make raw*. The first use of each option downloads its model (about 0.1–0.9 GB each).
 - **Training tags:** *+ Train* on any sample adds it to a genre pack (House, R&B / Rap, Gospel / Soul) with mood tags.
+- **Import list:** on the LoRA Packs page. In the track-list sheet, download it as CSV, then click *Import list* on the pack. GLORE finds and downloads every ticked track and tags it with its Tag. Tracks it can't find are listed under the pack. Running it again skips what's already there.
 - **LoRA Packs page** (bottom of the sidebar): track counts per pack, plus *Prepare*, which strips vocals ready for training. *Train LoRA* arrives with Generate.
 
 ## If something goes wrong

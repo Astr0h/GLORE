@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src 'self' http://127.0.0.1:*; media-src 'self' blob: http://127.0.0.1:*; img-src 'self' data:; style-src 'self'; script-src 'self'" />
+  <title>GLORE</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="boot" class="boot">
+    <div class="boot-inner">
+      <div class="wordmark big">GLORE</div>
+      <p id="boot-msg">Starting engine…</p>
+      <div id="boot-actions" class="hidden">
+        <button id="boot-retry" class="btn">Retry</button>
+        <button id="boot-log" class="btn ghost">Open engine log</button>
+      </div>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <div class="wordmark">GLORE</div>
+    <input id="project-name" class="project-name" spellcheck="false" />
+    <div class="top-group">
+      <label>BPM</label>
+      <input id="project-bpm" class="num" type="number" min="40" max="220" step="0.01" />
+      <button id="bpm-follow" class="chip" title="Go back to following the vocal's natural tempo">follow vocal</button>
+    </div>
+    <div class="top-group"><label>Key</label><span id="project-key" class="value">—</span></div>
+    <div class="top-group">
+      <label>Genre</label>
+      <select id="genre-pack">
+        <option value="emotive_house">Emotive House</option>
+        <option value="melodic_rap">Melodic Rap</option>
+      </select>
+    </div>
+    <div class="spacer"></div>
+    <div class="segmented" id="monitor-mode" title="Changes what you hear only. Exports are never affected.">
+      <button data-mode="headphones">Headphones</button>
+      <button data-mode="sound_system">Sound System</button>
+    </div>
+    <div id="gpu" class="gpu" title="Engine status"></div>
+  </header>
+
+  <aside class="steps" id="steps"></aside>
+
+  <main id="view"></main>
+
+  <footer class="transport">
+    <div class="transport-controls">
+      <button id="btn-play" class="round" title="Play / pause (Space)">▶</button>
+      <button id="btn-stop" class="round small" title="Stop">■</button>
+      <div class="time"><span id="time-pos">0:00.0</span><span class="dim"> / </span><span id="time-dur" class="dim">0:00.0</span></div>
+      <div class="meter"><div id="meter-fill"></div></div>
+    </div>
+    <div class="layers" id="layers"><div class="empty">Layers appear here as you add samples.</div></div>
+  </footer>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="player.js"></script>
+  <script src="waveform.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -41,6 +41,11 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
   - **Training audio per pack:** import full songs; GLORE splits them automatically. House and R&B/Rap train on *instrumental only* (all vocals removed). Gospel/Soul uses *keep backing vocals*: the lead is removed, choirs/hums/ad-lib pads stay, so it can generate those textures but never a lead vocal.
   - Each LoRA needs ~30–100 reference tracks in that style. No Suno (or other AI-service) output in training sets: their terms forbid it.
 
+## Community LoRAs
+- Each genre pack can also load downloaded ACE-Step 1.5 LoRAs (e.g. from Hugging Face), not only ones trained in GLORE.
+- On import, GLORE checks the base model + variant (standard/XL, base/turbo/sft) and the license, and warns about mismatches.
+- A downloaded LoRA can be stacked with your own at adjustable strengths (e.g. 70% yours, 30% community).
+
 ## Hardware tiers
 - GLORE detects the GPU's VRAM and picks model sizes automatically.
 - **≥16 GB (e.g. RTX 4090):** ACE-Step 1.5 XL (4B) available; everything runs at full quality.

@@ -1,7 +1,7 @@
 # GLORE handover
 
 Read this first in any new Claude session about GLORE, then `docs/SPEC.md` (the full locked spec).
-Last updated: 17 Nov 2026.
+Last updated: 17 Nov 2026 (session 3).
 
 ## Who and what
 - **Seos** (GitHub `Astr0h`), Connemara, Ireland. Windows PC: **RTX 4060 Ti, 8 GB VRAM**. Uses Ableton Live 12.
@@ -9,6 +9,7 @@ Last updated: 17 Nov 2026.
 - Prefers clear, step-by-step explanations; makes his own design calls; doesn't want disclaimers.
 
 ## Where things stand
+- **Session 3 (PR `cloud-training`, waiting for Seos to merge and try):** cloud LoRA training on RunPod and the local 8 GB test. Built and tested with fakes only; **nothing has run against real RunPod yet.** First real steps on his PC: set up keys → *Test* → *Train LoRA* on House. Details in SPEC "Cloud LoRA training".
 - **Merged into main and working on his PC:** session 1 (Import, Analyse, Extract vocal, Vocal Lock, player, Headphones/Sound System), session 2 (link import, raw vocal chain, genre + mood tags, LoRA Packs page, Prepare, **Import list**) and the Windows setup fix.
 - **Run it:** `Setup GLORE.bat` (re-run after every `git pull`), then `Start GLORE.bat`. The setup log is `setup.log`.
 - **House training set:** 95 tracks from his track-list sheet (Fred again.., Skepta..Fred, LATIN MAFIA, jigitz *50 ballerinas*, plus Jamie xx, Four Tet, Bicep, Overmono, Nia Archives and others). Tags: 40 Soft, 30 Hype, 19 Heavy, 6 DNB. Downloaded via Import list; **Prepare** (vocal stripping) was started on 17 Nov.
@@ -18,12 +19,13 @@ Last updated: 17 Nov 2026.
 ## Decisions (don't re-ask)
 - **Design:** orange **#FF8F3D** everywhere (hover #FFA45E); second colour **Ivory** (`data-theme="ivory"`); soft orange glow, **no sheen**; flat matte panels; Inter + JetBrains Mono bundled. **No on-screen explanations**: hover tips only. Typed inputs instead of preset buttons; the pitch slider stays.
 - **Genre packs, one LoRA each:** House (Soft / Hype / Heavy / DNB moods) · R&B / Rap (Drake lane; Seos picks the tracks himself) · Gospel / Soul (Kanye lane; keeps backing vocals; Seos picks).
-- **LoRAs are trained on the standard ACE-Step 1.5 model**, not XL (8 GB VRAM). Training happens on a **cloud H100 (RunPod)**; generation runs locally.
+- **LoRAs are trained on the standard ACE-Step 1.5 model**, not XL (8 GB VRAM). Training happens on a **cloud H100 (RunPod)**; generation runs locally. Default variant **turbo** (what runs on 8 GB); base/sft selectable in cloud settings. Each LoRA's `glore_lora.json` records the variant + inference shift/steps, so Generate must load the matching DiT.
+- **Cloud:** RunPod REST **v2**; storage = one network volume reached over RunPod's S3 API; no custom Docker image (stock CUDA image + scripts uploaded to the volume). Pods are terminated, never just stopped. Defaults: 10 min idle stop, 4 h hard cap, $20 monthly limit.
 - **No Suno output in training sets** (Suno's terms forbid it). No watermark stripping. Local ACE-Step adds no watermark.
 - **Option A for cloud data:** download on the PC (Import list), then upload to cloud storage. Cloud-side YouTube downloads get bot-blocked.
 
 ## Next to build (in order)
-1. **Cloud LoRA training (RunPod):** API key in settings; upload prepared tracks (losslessly compressed, resumable) to a network volume; start an H100 pod from a GLORE training image; train ACE-Step 1.5 standard LoRA with mood captions; download the LoRA; auto-stop after 10 min idle plus a hard cap; show live cost and a monthly limit; a cheap 2-minute connection-test mode. Also a local 5-minute "will it fit on 8 GB?" test.
+1. **Verify cloud training for real** (session 3 code): the RunPod v2 field names (`gpu`, `mounts`, `dataCenterIds`, `env`, `args`, catalog `price.secure` / `availability`) came from the v2 docs and OpenAPI file, not a live call. If *Test* fails, the error text names the field; fix in `engine/glore_engine/cloud.py`. Pod-side problems show in `glore/pod-<id>.log` on the volume.
 2. **Arrange:** auto-place the vocal by phrase analysis (hook vs verse), pack templates, draggable blocks.
 3. **Chops:** per-pack chop style (learned from the `_vocals.wav` stems that Prepare keeps, with starred references weighted extra), select-to-loop for drums.
 4. Vocal FX → Mix → Export (WAV / MP3 320 / MIDI / stems ZIP) → **Generate** (ACE-Step, combined mode: vocal + reference) → community LoRA import and stacking → Remote mode (phone/laptop) → installer.

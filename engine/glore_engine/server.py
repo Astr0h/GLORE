@@ -17,7 +17,8 @@ from . import __version__
 from .analysis import analyse, parse_key, key_name, camelot
 from .audio_io import SUPPORTED_EXTENSIONS, load_stereo, save_wav, duration_seconds
 from .project import ProjectStore, Source, Layer, JobRunner, KINDS, PACKS, new_id
-from . import separation, cleanup, linkimport, datasets, tracklist
+from . import separation, cleanup, linkimport, datasets, tracklist, cloud, training
+from .cloud import CloudError, CloudManager
 from .vocal_lock import lock_vocal
 
 
@@ -67,6 +68,26 @@ class TrackListBody(BaseModel):
     csv_text: str | None = None
 
 
+class CloudSettingsBody(BaseModel):
+    api_key: str | None = None
+    s3_access_key: str | None = None
+    s3_secret: str | None = None
+    datacenter: str | None = None
+    volume_id: str | None = None
+    volume_gb: int | None = None
+    idle_minutes: float | None = None
+    hard_cap_hours: float | None = None
+    monthly_limit: float | None = None
+    gpu: str | None = None
+    variant: str | None = None
+    image: str | None = None
+
+
+class TrainBody(BaseModel):
+    epochs: int | None = None   # default: picked from the track count
+    rank: int | None = None     # default 64
+
+
 class LockBody(BaseModel):
     source_id: str
     target_bpm: float | None = None  # defaults to project BPM
@@ -74,11 +95,14 @@ class LockBody(BaseModel):
 
 
 
-def create_app(store: ProjectStore | None = None) -> FastAPI:
+def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | None = None,
+               resume_cloud: bool = True) -> FastAPI:
     app = FastAPI(title="GLORE engine", version=__version__)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.state.store = store or ProjectStore()
     app.state.jobs = JobRunner()
+    app.state.cloud = cloud_manager or CloudManager()
+    app.state.cloud_jobs = {}  # "train:<pack>" / "fit:<pack>" / "test" / "volume" -> engine job id
 
     def S() -> ProjectStore:
         return app.state.store
@@ -214,7 +238,11 @@ def create_app(store: ProjectStore | None = None) -> FastAPI:
     # ------------------------------------------------- genre tags / datasets
     @app.get("/packs")
     def packs():
-        return datasets.summary()
+        out = datasets.summary()
+        for p in out:
+            p["loras"] = [{k: l.get(k) for k in ("run_id", "trained_at", "tracks", "epochs", "loss", "variant", "path")}
+                          for l in training.list_loras(p["id"])]
+        return out
 
     @app.post("/sources/{source_id}/tag")
     def tag_source(source_id: str, body: TagBody):
@@ -407,6 +435,108 @@ def create_app(store: ProjectStore | None = None) -> FastAPI:
             return S().project.vocal_lock
 
         return {"job_id": app.state.jobs.start("vocal_lock", work).id}
+
+
+    # ------------------------------------------------------------ cloud GPU
+    def _cloud_job(key: str, kind: str, fn, gpu: bool = False):
+        cur = app.state.cloud_jobs.get(key)
+        if cur and app.state.jobs.jobs.get(cur) and app.state.jobs.jobs[cur].status == "running":
+            raise HTTPException(409, "Already running")
+
+        def work(report):
+            try:
+                return fn(report)
+            except CloudError as e:
+                raise RuntimeError(str(e)) from None
+
+        job = app.state.jobs.start(kind, work, gpu=gpu)
+        app.state.cloud_jobs[key] = job.id
+        return {"job_id": job.id}
+
+    def _cloud_errors(fn):
+        try:
+            return fn()
+        except CloudError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/cloud/settings")
+    def cloud_settings():
+        return cloud.public_settings()
+
+    @app.put("/cloud/settings")
+    def cloud_settings_put(body: CloudSettingsBody):
+        return _cloud_errors(lambda: cloud.public_settings(cloud.save_settings(body.model_dump(exclude_none=True))))
+
+    @app.get("/cloud/status")
+    def cloud_status():
+        st = _cloud_errors(app.state.cloud.status)
+        st["jobs"] = {k: v for k, v in app.state.cloud_jobs.items()
+                      if app.state.jobs.jobs.get(v) and app.state.jobs.jobs[v].status == "running"}
+        return st
+
+    @app.get("/cloud/quote")
+    def cloud_quote():
+        """What a training run would use and could cost at most, before you press go."""
+        def q():
+            s = cloud.load_settings()
+            if cloud.missing(s):
+                raise CloudError("Finish the cloud settings first")
+            gpu, price = cloud.pick_gpu(app.state.cloud.rp().gpus(), s["datacenter"], s["gpu"])
+            return {"gpu": gpu, "price_per_hr": price, "hard_cap_hours": s["hard_cap_hours"],
+                    "max_cost": round(price * float(s["hard_cap_hours"]), 2),
+                    "month_spend": app.state.cloud.month_spend(), "monthly_limit": s["monthly_limit"]}
+        return _cloud_errors(q)
+
+    @app.post("/cloud/volume")
+    def cloud_volume():
+        return _cloud_job("volume", "cloud_volume", lambda r: training.setup_volume(app.state.cloud, r))
+
+    @app.post("/cloud/test")
+    def cloud_test():
+        return _cloud_job("test", "cloud_test", lambda r: training.connection_test(app.state.cloud, r))
+
+    @app.post("/cloud/stop")
+    def cloud_stop():
+        return {"stopped": _cloud_errors(app.state.cloud.stop_all)}
+
+    @app.get("/loras")
+    def loras():
+        return training.list_loras()
+
+    @app.post("/datasets/{pack}/train")
+    def dataset_train(pack: str, body: TrainBody | None = None):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        b = body or TrainBody()
+        if b.epochs is not None and not 1 <= b.epochs <= 2000:
+            raise HTTPException(400, "Epochs must be between 1 and 2000")
+        if b.rank is not None and b.rank not in (8, 16, 32, 64, 128):
+            raise HTTPException(400, "Rank must be 8, 16, 32, 64 or 128")
+        if cloud.missing(cloud.load_settings()):
+            raise HTTPException(400, "Finish the cloud settings first")
+        return _cloud_job(f"train:{pack}", "train_lora",
+                          lambda r: training.train_cloud(pack, app.state.cloud, r, b.epochs, b.rank))
+
+    @app.post("/datasets/{pack}/fit-test")
+    def dataset_fit_test(pack: str):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        return _cloud_job(f"fit:{pack}", "fit_test", lambda r: training.fit_test(pack, r), gpu=True)
+
+    def _resume_cloud():
+        """After a restart: keep the safety net on any pods still up, and pick up runs in flight."""
+        if cloud.missing(cloud.load_settings()):
+            return
+        try:
+            app.state.cloud.resume_watching()
+        except Exception:
+            pass
+        for job_id, run in training.pending_runs().items():
+            _cloud_job(f"train:{run['pack']}", "train_lora",
+                       lambda r, j=job_id: training.follow(j, app.state.cloud, r))
+
+    if resume_cloud:
+        _resume_cloud()
 
     # ----------------------------------------------------------------- jobs
     @app.get("/jobs/{job_id}")

@@ -5,7 +5,7 @@
 ## Core principles
 - **The vocal is never regenerated.** AI only makes the instrumental; the original vocal is stretched/processed and mixed on top.
 - **Step-by-step flow** — approve each stage, jump back to any step without losing work.
-- **Everything local.** Nothing leaves the machine.
+- **Local by default.** Nothing leaves the machine except cloud jobs you start, which go to your own RunPod storage.
 - **Monitoring mode changes what you hear, never what you export.**
 - **Clean exports.** GLORE writes only its own metadata (title, artist, BPM, key). The local model adds no watermark. GLORE does not strip third-party watermarks.
 - **UI: no on-screen explanations.** Anything that needs explaining gets a hover tip. Typed inputs instead of preset buttons; sliders where a range makes sense (e.g. pitch).
@@ -60,6 +60,19 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 - **Auto on/off:** GLORE starts the cloud GPU through the RunPod API when a cloud job is queued or "Connect to cloud" is pressed. The pod stops itself after N idle minutes (default 10), with a hard session cap as a safety net. The app shows live cost per session and per month, with an optional monthly spending limit.
 - Needed: an engine URL + access token setting, file upload (remote engines can't read local paths), the UI served by the engine for phone browsers, a mobile layout, and the Docker image.
 
+## Cloud LoRA training (built in session 3)
+- **Where:** RunPod, REST API v2 (`api.runpod.io/v2`; v1 was retired on 15 Nov 2026). One **network volume** in an S3-API datacenter holds everything; GLORE reads and writes it from the PC through RunPod's S3-compatible API, so uploads and status checks never need a running pod or an open port.
+- **Keys:** RunPod API key (pods) + S3 API key (`user_…` id + secret). Stored in `%APPDATA%\GLORE\cloud\settings.json`, masked in the UI.
+- **Volume layout** (`/workspace` on a pod = the bucket root over S3): `glore/` (pod scripts, `queue/`, `runs/<job>/status.json` + `log.txt`, `pods/<id>.json` heartbeats), `datasets/<pack>/` (FLAC + `dataset.json`), `tensors/<pack>/<hash>/`, `loras/<pack>/<run>/`, `ace/` (ACE-Step 1.5 + venv + checkpoints, installed on first run).
+- **No custom Docker image:** pods use the stock `nvidia/cuda:12.8.1-runtime-ubuntu22.04` image and run `glore/pod_start.sh`, which GLORE uploads before each job. ACE-Step (pinned commit) and its venv live on the volume, so the second run starts in about a minute. Nothing to build or publish; the pod code ships with the app.
+- **Trainer:** ACE-Step 1.5's built-in Side-Step CLI, corrected ("fixed") mode, PEFT LoRA. Default: standard 2B **turbo** variant (what runs locally on 8 GB), rank 64 / alpha 128, lr 1e-4, batch 1 × grad-accum 4, checkpoint every 10 epochs. Epochs from track count (≤10: 300, ≤50: 150, 50+: 80), overridable. Captions = pack + moods + BPM + key, trigger word `glore_<pack>`, all tracks marked instrumental.
+- **Flow:** prepared WAV → 24-bit FLAC (lossless) → upload (files already there are skipped, so an interrupted upload resumes) → job file in `glore/queue/` → start the cheapest in-stock H100 in the volume's datacenter, or reuse a GLORE pod that's idling → follow `status.json` (epoch, loss, ETA, cost) → download `adapter_config.json` + `adapter_model.safetensors` + a `glore_lora.json` manifest (base model, variant, inference shift/steps, trigger) to `%APPDATA%\GLORE\loras\<pack>\<run>\`.
+- **Run id** = hash of tracks + settings. The same run started again resumes from its last checkpoint; an identical finished run is refused.
+- **Stopping:** the pod terminates itself after `idle_minutes` with no job (default 10) and at `hard_cap_hours` (default 4); `pod_start.sh` also terminates on any exit. GLORE watches every pod it started (survives app restarts) and terminates it at the hard cap, at the monthly limit, if its heartbeat stops for 20 min, or on **Stop**. Pods are *terminated*, not stopped, so nothing keeps billing; the data is on the volume.
+- **Cost:** live per pod and per month from a local ledger (pod price × time). A run is refused if the worst case (price × hard cap) would pass the monthly limit (default $20). Network volume storage is separate: $0.07/GB/month.
+- **Connection test:** writes and reads a file over S3, then runs the cheapest in-stock GPU for ~2 min (hard cap 4 min) to prove pod start, volume mount and self-shutdown.
+- **8 GB test (local):** installs ACE-Step in `%APPDATA%\GLORE\ace` with `uv`, trains 3 tracks for 5 min with low-VRAM settings (rank 16, AdamW8bit, encoder offload), reports peak VRAM, s/step and a full-run estimate for the PC.
+
 ## Architecture
 - `app/` — Electron desktop shell + UI (plain HTML/CSS/JS; theme in CSS variables).
 - `engine/` — Python engine (FastAPI on 127.0.0.1), started/stopped by the app.
@@ -68,4 +81,5 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 ## Build log
 - **Session 1** (2026-11-17): Engine, desktop app, Import, Analyse, Extract vocal, Vocal Lock, player, monitor modes, Windows setup. UI tidy: hover tips, no preset BPM buttons.
 - **Session 2** (2026-11-17): Link import, raw vocal chain (backing / echo / reverb / noise), genre + mood tags, LoRA Packs page with Prepare.
-- Next: Arrange → Chops → Vocal FX → Mix → Export → Generate (ACE-Step, combined mode) → LoRA training → installer. → Chops (incl. select-to-loop) → Vocal FX → Mix → Export → Generate (ACE-Step) → LoRA training → installer (.exe).
+- **Session 3** (2026-11-17): Cloud LoRA training on RunPod (settings, network volume, S3 upload, H100 pods with self-shutdown, live cost, monthly limit, connection test, resume), local 8 GB fit test.
+- Next: Arrange → Chops (incl. select-to-loop) → Vocal FX → Mix → Export → Generate (ACE-Step, combined mode, loads these LoRAs) → community LoRA import → Remote mode → installer (.exe).

@@ -32,6 +32,9 @@ const state = {
   rawStages: { backing: true, echo: true, reverb: true, noise: false },
   packs: [],
   packItems: {},           // pack id -> items (LoRA Packs page)
+  cloud: { settings: null, status: null, open: false, draft: {}, job: null, following: {} },
+  trainOpts: {},           // pack id -> { epochs, rank } typed on the card
+  fit: {},                 // pack id -> last 8 GB test result
   project: null,
   step: 'import',
   selected: null,          // source id on the Analyse step
@@ -124,6 +127,7 @@ async function boot() {
     }
   }
   await loadPacks();
+  await loadCloud();
   await refresh();
   state.step = state.project.step || 'import';
   render();
@@ -504,6 +508,227 @@ function tagDrawer(s) {
   return el('div', { class: 'drawer' }, ...parts);
 }
 
+// ---------- Cloud GPU (RunPod) + LoRA training
+const money = (v) => `$${Number(v || 0).toFixed(2)}`;
+const mins = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m` : `${Math.max(0, Math.floor(s / 60))} min`);
+const defaultEpochs = (n) => (n <= 10 ? 300 : n <= 50 ? 150 : 80);
+
+async function loadCloud() {
+  try {
+    state.cloud.settings = await api('/cloud/settings');
+    state.cloud.status = await api('/cloud/status');
+    for (const [key, jobId] of Object.entries(state.cloud.status.jobs || {})) {
+      if (!state.cloud.following[key]) followCloudJob(key, jobId);   // picked up again after a restart
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+// Keep cost and pod state live while you're on the LoRA Packs page or something is running
+setInterval(async () => {
+  const busy = Object.keys(state.cloud.following).length || (state.cloud.status?.active || []).length;
+  if (!state.project || !(state.step === 'packs' || busy)) return;
+  try { state.cloud.status = await api('/cloud/status'); } catch (_) { return; }
+  updateCloudPanel();
+}, 5000);
+
+function updateCloudPanel() {
+  const cur = document.getElementById('cloud-panel');
+  if (!cur || cur.contains(document.activeElement)) return;   // don't disturb typing
+  cur.replaceWith(cloudPanel());
+}
+
+async function followCloudJob(key, jobId) {
+  state.cloud.following[key] = jobId;
+  state.packJobs = state.packJobs || {};
+  const pack = key.includes(':') ? key.split(':')[1] : null;
+  const set = (j) => {
+    if (pack) { state.packJobs[pack] = { progress: j.progress, message: j.message || '' }; updatePackJob(pack); }
+    else { state.cloud.job = { progress: j.progress, message: j.message || '' }; updateCloudPanel(); }
+  };
+  set({ progress: 0, message: 'Starting' });
+  if (pack) render(); else updateCloudPanel();
+  try {
+    return await waitJob(jobId, set);
+  } finally {
+    if (pack) delete state.packJobs[pack]; else state.cloud.job = null;
+    delete state.cloud.following[key];
+    await loadPacks();
+    await loadCloud();
+    render();
+  }
+}
+
+function field(label, tip, input) {
+  return el('label', { class: 'field' }, el('span', { class: 'label', 'data-tip': tip }, label), input);
+}
+
+function settingInput(key, attrs = {}) {
+  const s = state.cloud.settings || {};
+  const d = state.cloud.draft;
+  const value = key in d ? d[key] : (s[key] ?? '');
+  return el('input', {
+    class: 'field-input' + (attrs.type === 'number' ? ' mono' : ''), spellcheck: 'false', ...attrs, value,
+    oninput: (e) => { d[key] = e.target.value; },
+  });
+}
+
+function settingSelect(key, options) {
+  const s = state.cloud.settings || {};
+  const d = state.cloud.draft;
+  const value = key in d ? d[key] : (s[key] ?? '');
+  const sel = el('select', { class: 'field-input', onchange: (e) => { d[key] = e.target.value; } },
+    ...options.map(([v, label]) => el('option', { value: v }, label)));
+  sel.value = value;
+  return sel;
+}
+
+async function saveCloudSettings() {
+  const body = {};
+  for (const [k, v] of Object.entries(state.cloud.draft)) {
+    if (['volume_gb', 'idle_minutes', 'hard_cap_hours', 'monthly_limit'].includes(k)) { if (v !== '') body[k] = Number(v); }
+    else body[k] = v;
+  }
+  state.cloud.settings = await api('/cloud/settings', { method: 'PUT', body });
+  state.cloud.draft = {};
+  state.cloud.status = await api('/cloud/status');
+}
+
+function cloudSettingsForm() {
+  const s = state.cloud.settings;
+  const dcs = [['', 'Auto (EU first)'], ...s.s3_datacenters.map((d) => [d, d])];
+  const save = async () => {
+    try { await saveCloudSettings(); toast('Saved'); if (!state.cloud.settings.missing.length) state.cloud.open = false; render(); }
+    catch (e) { toast(e.message, true); }
+  };
+  const createVolume = async () => {
+    try {
+      await saveCloudSettings();
+      const r = await api('/cloud/volume', { method: 'POST' });
+      await followCloudJob('volume', r.job_id);
+      toast('Network volume created');
+    } catch (e) { toast(e.message, true); }
+  };
+  return el('div', { class: 'cloud-form' },
+    el('div', { class: 'fields' },
+      field('RunPod API key', 'RunPod console → Settings → API Keys. Starts and stops the GPU.', settingInput('api_key', { type: 'password', placeholder: 'rpa_…' })),
+      field('S3 access key', 'Credentials → S3 API Keys: your user id (user_…), shown with the key. Lets GLORE upload without a running GPU.', settingInput('s3_access_key', { placeholder: 'user_…' })),
+      field('S3 secret', 'The secret shown once when you create the S3 API key.', settingInput('s3_secret', { type: 'password' })),
+      field('Datacenter', 'Must support RunPod\'s S3 API. Auto picks the one with the most H100s free, EU first.', settingSelect('datacenter', dcs)),
+      field('Network volume', 'Where training audio, models and LoRAs live between runs. Paste an existing volume id, or create one.',
+        el('div', { class: 'row tight' }, settingInput('volume_id', { placeholder: 'none yet' }),
+          s.volume_id ? null : el('button', { class: 'btn small ghost', disabled: !!state.cloud.job, onclick: createVolume, 'data-tip': 'Creates it in the datacenter above. Storage is billed monthly, about $0.07 per GB.' }, 'Create'))),
+      field('Volume GB', 'Size for a new volume. 50 GB holds ACE-Step, its models and all three packs.', settingInput('volume_gb', { type: 'number', min: 10, max: 4096 })),
+      field('Idle stop · min', 'The GPU shuts itself down after this long with nothing to do.', settingInput('idle_minutes', { type: 'number', min: 1, max: 120 })),
+      field('Hard cap · h', 'No GPU session ever runs longer than this, whatever happens. A run cut short resumes from its last checkpoint.', settingInput('hard_cap_hours', { type: 'number', min: 0.5, max: 48, step: 0.5 })),
+      field('Monthly limit · $', 'GLORE won\'t start a run that could go over this, and stops the GPU if it\'s reached. 0 = no limit.', settingInput('monthly_limit', { type: 'number', min: 0, step: 1 })),
+      field('GPU', 'Picked by name: the cheapest one in stock whose name contains this.', settingInput('gpu', { placeholder: 'H100' })),
+      field('Base model', 'ACE-Step 1.5 standard (2B). LoRAs only work on the model they were trained on: turbo is what runs on your 8 GB card.',
+        settingSelect('variant', [['turbo', 'Standard · turbo'], ['base', 'Standard · base'], ['sft', 'Standard · sft']]))),
+    el('div', { class: 'row' }, el('button', { class: 'btn small', onclick: save }, 'Save')));
+}
+
+function cloudPanel() {
+  const c = state.cloud;
+  const s = c.settings;
+  if (!s) return el('div', { class: 'panel cloud', id: 'cloud-panel' }, el('span', { class: 'dim small' }, 'Cloud GPU…'));
+  const st = c.status || { active: [], month_spend: 0, monthly_limit: 0 };
+  const ready = !s.missing.length;
+  const active = st.active || [];
+  const live = active.reduce((a, r) => a + r.cost_so_far, 0);
+  const chip = !ready ? el('span', { class: 'badge warn' }, 'not set up')
+    : active.length ? el('span', { class: 'badge live' }, `${active.length} running · ${money(live)}`)
+      : el('span', { class: 'badge', 'data-tip': `Volume ${s.volume_id}` }, `ready · ${s.datacenter}`);
+  const test = async () => {
+    try {
+      const r = await api('/cloud/test', { method: 'POST' });
+      const res = await followCloudJob('test', r.job_id);
+      toast(`Cloud OK · ${res.gpu} · ${res.seconds} s · ${money(res.cost)}`);
+    } catch (e) { toast(e.message, true); }
+  };
+  const stop = async () => {
+    if (!confirm('Stop every GLORE cloud GPU now? A training run in progress keeps its last checkpoint.')) return;
+    try { const r = await api('/cloud/stop', { method: 'POST' }); toast(`Stopped ${r.stopped}`); await loadCloud(); updateCloudPanel(); }
+    catch (e) { toast(e.message, true); }
+  };
+  return el('div', { class: 'panel cloud', id: 'cloud-panel' },
+    el('div', { class: 'cloud-head' },
+      el('strong', {}, 'Cloud GPU'), chip,
+      el('span', { class: 'mono small dim', 'data-tip': 'GLORE GPU time this month (storage is billed separately by RunPod)' },
+        `${money(st.month_spend)}${st.monthly_limit ? ` / ${money(st.monthly_limit)}` : ''} this month`),
+      el('div', { class: 'spacer' }),
+      c.job ? el('div', { class: 'status' }, el('div', { class: 'progress' }, el('div', { style: `width:${c.job.progress * 100}%` })), el('span', { class: 'msg' }, c.job.message)) : null,
+      active.length ? el('button', { class: 'btn small danger', onclick: stop, 'data-tip': 'Shut down every running GLORE pod now' }, 'Stop') : null,
+      el('button', { class: 'btn small ghost', disabled: !ready || !!c.job, onclick: test, 'data-tip': 'Starts the cheapest GPU for about 2 minutes to check keys, storage and the pod script. Costs about a cent.' }, 'Test'),
+      el('button', { class: `btn small ghost${c.open ? ' on' : ''}`, onclick: () => { c.open = !c.open; render(); } }, 'Settings')),
+    ...active.map((r) => el('div', { class: 'pod-row mono small' },
+      el('span', {}, r.kind === 'test' ? 'test' : (r.pack || r.kind)),
+      el('span', { class: 'dim' }, r.gpu),
+      el('span', {}, mins(r.runtime_s)),
+      el('span', {}, money(r.cost_so_far)),
+      el('span', { class: 'dim', 'data-tip': 'Time left before the hard cap stops it' }, `cap ${mins(Math.max(0, r.cap_left_s))}`))),
+    (c.open || !ready) ? cloudSettingsForm() : null);
+}
+
+function trainRow(p, busy) {
+  const o = state.trainOpts[p.id] = state.trainOpts[p.id] || {};
+  const ready = state.cloud.settings && !state.cloud.settings.missing.length;
+  const enough = p.prepared >= p.min_tracks;
+  const tip = !ready ? 'Set up the cloud GPU above first' : !enough ? `Prepare at least ${p.min_tracks} tracks first` : 'Upload the prepared tracks and train on a cloud H100';
+  return el('div', { class: 'row train-row' },
+    el('span', { class: 'label', 'data-tip': `Passes over the whole set. Empty = picked from the track count (${defaultEpochs(p.prepared)} for ${p.prepared}).` }, 'epochs'),
+    el('input', { class: 'num sm', type: 'number', min: 1, max: 2000, placeholder: String(defaultEpochs(p.prepared)), value: o.epochs || '', oninput: (e) => { o.epochs = e.target.value; } }),
+    el('span', { class: 'label', 'data-tip': 'LoRA rank. 64 is the usual; 128 learns more detail, 16–32 is lighter. 8, 16, 32, 64 or 128.' }, 'rank'),
+    el('input', { class: 'num sm', type: 'number', min: 8, max: 128, placeholder: '64', value: o.rank || '', oninput: (e) => { o.rank = e.target.value; } }),
+    el('button', { class: 'btn small ghost', disabled: busy || p.prepared < 3, onclick: () => fitTest(p), 'data-tip': 'Trains on 3 tracks on this PC for 5 minutes with low-VRAM settings and measures VRAM. First run downloads ACE-Step and its models (~13 GB).' }, '8 GB test'),
+    el('button', { class: 'btn small', disabled: busy || !ready || !enough, onclick: () => trainPack(p), 'data-tip': tip }, 'Train LoRA'));
+}
+
+function loraLine(p) {
+  const l = (p.loras || [])[0];
+  if (!l) return null;
+  const when = new Date(l.trained_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  return el('div', { class: 'lora-line small', 'data-tip': l.path },
+    el('span', { class: 'ok-dot' }), `LoRA · ${when} · ${l.tracks} tracks · ${l.epochs} epochs`,
+    l.loss != null ? el('span', { class: 'mono dim' }, ` · loss ${Number(l.loss).toFixed(3)}`) : null,
+    p.loras.length > 1 ? el('span', { class: 'dim' }, ` · +${p.loras.length - 1} older`) : null);
+}
+
+function fitLine(id) {
+  const r = state.fit[id];
+  if (!r) return null;
+  const verdict = r.fits === 'yes' ? 'Fits on this GPU' : r.fits === 'no' ? 'Out of memory on this GPU' : 'No result';
+  return el('div', { class: `fit-line small${r.fits === 'no' ? ' bad' : ''}`, 'data-tip': `Rank 16, 8-bit optimiser, encoder offloaded. Log: ${r.log}` },
+    verdict, el('span', { class: 'mono dim' },
+      ` · ${r.peak_vram_gb} / ${r.total_vram_gb} GB`,
+      r.sec_per_step ? ` · ${r.sec_per_step} s/step` : '',
+      r.full_run_hours_here ? ` · full run here ~${r.full_run_hours_here} h` : ''));
+}
+
+async function trainPack(p) {
+  const o = state.trainOpts[p.id] || {};
+  try {
+    const q = await api('/cloud/quote');
+    const lim = q.monthly_limit ? ` of ${money(q.monthly_limit)}` : '';
+    if (!confirm(`Train ${p.label} on ${q.gpu} (${money(q.price_per_hr)}/h)?\n\nAt most ${money(q.max_cost)} (${q.hard_cap_hours} h cap). This month so far: ${money(q.month_spend)}${lim}.`)) return;
+    const body = {};
+    if (o.epochs) body.epochs = Number(o.epochs);
+    if (o.rank) body.rank = Number(o.rank);
+    const r = await api(`/datasets/${p.id}/train`, { method: 'POST', body });
+    const info = await followCloudJob(`train:${p.id}`, r.job_id);
+    toast(`${p.label} LoRA ready · ${info.epochs} epochs`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function fitTest(p) {
+  if (!confirm('Run the 8 GB test on this PC?\n\nAbout 5 minutes of training on 3 tracks. The first time it also installs ACE-Step and downloads its models (~13 GB).')) return;
+  try {
+    const r = await api(`/datasets/${p.id}/fit-test`, { method: 'POST' });
+    const res = await followCloudJob(`fit:${p.id}`, r.job_id);
+    state.fit[p.id] = res;
+    render();
+  } catch (e) { toast(e.message, true); }
+}
+
 // ---------- LoRA Packs page
 async function loadPacks() {
   try {
@@ -544,10 +769,13 @@ function viewPacks(view) {
           class: 'btn small ghost', 'data-tip': 'Download every ticked track from a track-list CSV (export it from the sheet). Tracks already in the pack are skipped.',
           onclick: () => importTrackList(p.id),
         }, 'Import list'),
-        el('button', { class: 'btn small', disabled: true, 'data-tip': 'Training arrives with the Generate step' }, 'Train LoRA')),
+        null),
+      trainRow(p, !!job),
+      loraLine(p),
+      fitLine(p.id),
       listReport(p.id)));
   }
-  view.append(grid);
+  view.append(cloudPanel(), grid);
 }
 
 async function importTrackList(id) {

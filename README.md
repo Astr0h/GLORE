@@ -35,6 +35,12 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 - **Player:** every layer in sync, M / S / volume, click a waveform to seek, Space to play/pause.
 - **Headphones / Sound System:** monitoring only. Exports are never affected.
 
+## New in session 2
+- **Link import:** paste a YouTube, SoundCloud, Spotify or Apple Music link under the drop zone. Spotify and Apple Music are matched on YouTube.
+- **Raw vocal:** on any vocal, choose what to strip (backing vocals, echo, reverb, noise), then click *Make raw*. The first use of each option downloads its model (about 0.1–0.9 GB each).
+- **Training tags:** *+ Train* on any sample adds it to a genre pack (House, R&B / Rap, Gospel / Soul) with mood tags.
+- **LoRA Packs page** (bottom of the sidebar): track counts per pack, plus *Prepare*, which strips vocals ready for training. *Train LoRA* arrives with Generate.
+
 ## If something goes wrong
 - **Stuck on "Starting engine…":** click *Open engine log* and send Claude what's in it.
 - **"CPU only — CUDA not found"** in the top right: update your NVIDIA driver and re-run setup.

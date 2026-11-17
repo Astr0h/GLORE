@@ -47,4 +47,5 @@ Import → Analyse → Vocal Lock → Arrange → Generate → Chops → Vocal F
 
 ## Build log
 - **Session 1** (2026-11-17): Engine, desktop app, Import, Analyse, Extract vocal, Vocal Lock, player, monitor modes, Windows setup. UI tidy: hover tips, no preset BPM buttons.
-- Next: Raw vocal + link import + genre tagging → Arrange → Chops (incl. select-to-loop) → Vocal FX → Mix → Export → Generate (ACE-Step) → LoRA training → installer (.exe).
+- **Session 2** (2026-11-17): Link import, raw vocal chain (backing / echo / reverb / noise), genre + mood tags, LoRA Packs page with Prepare.
+- Next: Arrange → Chops → Vocal FX → Mix → Export → Generate (ACE-Step, combined mode) → LoRA training → installer. → Chops (incl. select-to-loop) → Vocal FX → Mix → Export → Generate (ACE-Step) → LoRA training → installer (.exe).

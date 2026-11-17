@@ -26,6 +26,12 @@ const LATER = {
 const KIND_LABEL = { vocal: 'Vocal', full_song: 'Full song', beat: 'Beat' };
 
 const state = {
+  linkJobs: [],            // { id, url, progress, message }
+  linkDraft: '',
+  open: {},                // source id -> 'raw' | 'tag' (which drawer is open)
+  rawStages: { backing: true, echo: true, reverb: true, noise: false },
+  packs: [],
+  packItems: {},           // pack id -> items (LoRA Packs page)
   project: null,
   step: 'import',
   selected: null,          // source id on the Analyse step
@@ -117,6 +123,7 @@ async function boot() {
       await new Promise((r) => setTimeout(r, 500));
     }
   }
+  await loadPacks();
   await refresh();
   state.step = state.project.step || 'import';
   render();
@@ -246,6 +253,9 @@ function renderSteps() {
       onclick: () => goStep(s.id),
     }, el('span', { class: 'n' }, i + 1), s.label, s.ready ? null : el('span', { class: 'soon' }, 'soon')));
   });
+  box.append(el('div', { class: 'rail-sep' }),
+    el('button', { class: `step${state.step === 'packs' ? ' on' : ''}`, onclick: () => goStep('packs') },
+      el('span', { class: 'n icon' }, '◆'), 'LoRA Packs'));
 }
 
 function goStep(id) {
@@ -259,12 +269,19 @@ function render() {
   if (!state.project) return;
   renderTop();
   renderSteps();
-  state.viewWaves = [];
   const view = $('#view');
+  const active = document.activeElement;
+  if (active && view.contains(active) && active.tagName === 'INPUT' && active.type !== 'range') {
+    state.renderDeferred = true;   // finish typing first; re-render on blur
+    return;
+  }
+  state.renderDeferred = false;
+  state.viewWaves = [];
   view.innerHTML = '';
-  const fn = { import: viewImport, analyse: viewAnalyse, lock: viewLock }[state.step] || viewLater;
+  const fn = { import: viewImport, analyse: viewAnalyse, lock: viewLock, packs: viewPacks }[state.step] || viewLater;
   fn(view);
 }
+document.addEventListener('focusout', () => setTimeout(() => { if (state.renderDeferred) render(); }, 0));
 
 function nextButton(step, label) {
   return el('button', { class: 'btn', onclick: () => goStep(step) }, label + ' →');
@@ -315,52 +332,229 @@ function sampleFacts(s) {
   return `${eff.bpm} BPM · ${keyText} · ${fmt(s.duration)}`;
 }
 
+const PACK_LABEL = { house: 'House', rnb_rap: 'R&B / Rap', gospel_soul: 'Gospel / Soul' };
+const ORIGIN_BADGE = { link: ['link', 'Imported from a link'], extracted: ['extracted', 'Extracted from a full song'], raw: ['raw', 'Effects removed'] };
+
+async function importLink(url) {
+  url = url.trim();
+  if (!url) return;
+  try {
+    const r = await api('/sources/import-link', { method: 'POST', body: { url } });
+    const job = { id: r.job_id, url, service: r.service, progress: 0, message: 'Starting' };
+    state.linkJobs.push(job);
+    state.linkDraft = '';
+    render();
+    try {
+      const res = await waitJob(r.job_id, (j) => { job.progress = j.progress; job.message = j.message; updateLinkJobUi(job); });
+      if (res.matched && (r.service === 'spotify' || r.service === 'apple')) toast(`Matched on YouTube: ${res.matched}`);
+    } catch (e) { toast(e.message, true); }
+    state.linkJobs = state.linkJobs.filter((j) => j !== job);
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+function updateLinkJobUi(job) {
+  const node = document.querySelector(`[data-link="${job.id}"]`);
+  if (!node) return;
+  node.querySelector('.progress div').style.width = (job.progress * 100) + '%';
+  node.querySelector('.msg').textContent = job.message || 'Working…';
+}
+
 function viewImport(view) {
   const p = state.project;
-  view.append(el('h1', { 'data-tip': 'Drop in vocals, full songs or beats. GLORE guesses what each one is — click a tag to correct it.' }, 'Import'));
-  const dz = el('div', { class: 'dropzone panel', 'data-tip': 'WAV · MP3 · FLAC · AIFF · OGG' },
-    el('strong', {}, 'Drop audio here'),
-    el('button', { class: 'btn ghost', onclick: async () => importPaths(await window.glore.pickFiles()) }, 'Browse…'));
+  view.append(el('h1', { 'data-tip': 'Drop in vocals, full songs or beats, or paste a link. GLORE guesses what each one is — click a tag to correct it.' }, 'Import'));
+
+  const link = el('input', { class: 'link-input', placeholder: 'Paste a YouTube, SoundCloud, Spotify or Apple Music link', value: state.linkDraft, spellcheck: 'false' });
+  link.addEventListener('input', () => { state.linkDraft = link.value; });
+  link.addEventListener('keydown', (e) => { if (e.key === 'Enter') { link.blur(); importLink(link.value); } });
+  const dz = el('div', { class: 'dropzone panel' },
+    el('strong', { 'data-tip': 'WAV · MP3 · FLAC · AIFF · OGG' }, 'Drop audio here'),
+    el('button', { class: 'btn ghost', onclick: async () => importPaths(await window.glore.pickFiles()) }, 'Browse…'),
+    el('div', { class: 'or' }, 'or'),
+    el('div', { class: 'link-row', 'data-tip': 'Spotify and Apple Music are protected, so GLORE finds the same track on YouTube.' },
+      link, el('button', { class: 'btn', onclick: () => { link.blur(); importLink(link.value); } }, 'Import')));
   view.append(dz);
+
+  if (state.linkJobs.length) {
+    view.append(el('div', { class: 'panel' }, ...state.linkJobs.map((j) => el('div', { class: 'link-job', 'data-link': j.id },
+      el('span', { class: 'badge' }, j.service), el('span', { class: 'url' }, j.url),
+      el('div', { class: 'status' }, el('div', { class: 'progress' }, el('div', { style: `width:${j.progress * 100}%` })), el('span', { class: 'msg' }, j.message))))));
+  }
 
   if (p.sources.length) {
     const list = el('div', { class: 'panel' });
-    for (const s of p.sources) {
-      const auto = s.analysis && !s.derived_from && s.analysis.kind_guess === s.kind;
-      const kinds = el('div', { class: 'row' },
-        ...Object.entries(KIND_LABEL).map(([k, label]) => el('button', {
-          class: `chip${k === 'vocal' ? ' vocal' : ''}${s.kind === k ? ' on' : ''}`,
-          'data-tip': s.kind === k && auto ? 'Auto-detected' : null,
-          onclick: async () => {
-            if (s.kind === k) return;
-            try { const r = await api(`/sources/${s.id}/kind`, { method: 'POST', body: { kind: k } }); trackJob(s.id, r.job_id); } catch (e) { toast(e.message, true); }
-          },
-        }, label)));
-      const actions = el('div', { class: 'row' },
-        s.kind === 'full_song' && !state.jobs[s.id] ? el('button', {
-          class: 'btn small', 'data-tip': 'Pulls the acapella out on your GPU. The other stems land in the layer list.',
-          onclick: () => extractVocal(s),
-        }, 'Extract vocal') : null,
-        el('button', { class: 'btn small ghost', onclick: () => { soloOnly(`src-${s.id}`); player.play(0); } }, 'Preview'),
-        el('button', { class: 'btn small danger', onclick: async () => { await api(`/sources/${s.id}`, { method: 'DELETE' }); refresh(); } }, 'Remove'),
-      );
-      const canvas = el('canvas');
-      list.append(el('div', { class: 'sample' },
-        el('div', {},
-          el('div', { class: 'name' }, s.name, s.derived_from ? el('span', { class: 'badge', style: 'margin-left:8px', 'data-tip': 'Extracted from a full song' }, 'extracted') : null),
-          el('div', { class: 'facts' }, sampleFacts(s)),
-          el('div', { style: 'margin-top:8px' }, kinds),
-          jobStatus(s.id)),
-        actions, canvas));
-      const pl = player.layers.get(`src-${s.id}`);
-      if (pl) {
-        const w = new Waveform(canvas, { color: s.kind === 'vocal' ? cssVar('--wave-vocal') : undefined, onSeek: (t) => player.seek(t) });
-        w.set({ buffer: pl.buffer, phrases: s.analysis?.phrases || [] });
-        state.viewWaves.push(w);
-      }
-    }
+    for (const s of p.sources) list.append(sampleCard(s));
     view.append(list, nextButton('analyse', 'Analyse'));
   }
+}
+
+function sampleCard(s) {
+  const auto = s.analysis && !s.derived_from && s.analysis.kind_guess === s.kind;
+  const busy = !!state.jobs[s.id];
+  const drawer = state.open[s.id];
+  const toggle = (name) => { state.open[s.id] = drawer === name ? null : name; render(); };
+
+  const kinds = el('div', { class: 'row' },
+    ...Object.entries(KIND_LABEL).map(([k, label]) => el('button', {
+      class: `chip${k === 'vocal' ? ' vocal' : ''}${s.kind === k ? ' on' : ''}`,
+      'data-tip': s.kind === k && auto ? 'Auto-detected' : null,
+      onclick: async () => {
+        if (s.kind === k) return;
+        try { const r = await api(`/sources/${s.id}/kind`, { method: 'POST', body: { kind: k } }); trackJob(s.id, r.job_id); } catch (e) { toast(e.message, true); }
+      },
+    }, label)),
+    el('span', { class: 'vsep' }),
+    el('button', {
+      class: `chip tag${s.pack ? ' on' : ''}${drawer === 'tag' ? ' open' : ''}`,
+      'data-tip': 'Add this track to a LoRA training set',
+      onclick: () => toggle('tag'),
+    }, s.pack ? `${PACK_LABEL[s.pack]}${s.moods.length ? ' · ' + s.moods.join(', ') : ''}` : '+ Train'));
+
+  const actions = el('div', { class: 'row' },
+    s.kind === 'full_song' && !busy ? el('button', {
+      class: 'btn small', 'data-tip': 'Pulls the acapella out on your GPU. The other stems land in the layer list.',
+      onclick: () => extractVocal(s),
+    }, 'Extract vocal') : null,
+    s.kind === 'vocal' && !busy ? el('button', {
+      class: `btn small${drawer === 'raw' ? '' : ' ghost'}`, 'data-tip': 'Strip reverb, echo, backing vocals and noise to get a dry lead',
+      onclick: () => toggle('raw'),
+    }, 'Raw vocal') : null,
+    el('button', { class: 'btn small ghost', onclick: () => { soloOnly(`src-${s.id}`); player.play(0); } }, 'Preview'),
+    el('button', { class: 'btn small danger', onclick: async () => { await api(`/sources/${s.id}`, { method: 'DELETE' }); refresh(); } }, 'Remove'),
+  );
+  const badge = ORIGIN_BADGE[s.origin] || (s.derived_from ? ORIGIN_BADGE.extracted : null);
+  const canvas = el('canvas');
+  const card = el('div', { class: 'sample' },
+    el('div', {},
+      el('div', { class: 'name' }, s.name, badge ? el('span', { class: 'badge', style: 'margin-left:8px', 'data-tip': badge[1] }, badge[0]) : null),
+      el('div', { class: 'facts' }, sampleFacts(s)),
+      el('div', { style: 'margin-top:8px' }, kinds),
+      jobStatus(s.id)),
+    actions,
+    drawer === 'raw' && s.kind === 'vocal' && !busy ? rawDrawer(s) : null,
+    drawer === 'tag' ? tagDrawer(s) : null,
+    canvas);
+  const pl = player.layers.get(`src-${s.id}`);
+  if (pl) {
+    const w = new Waveform(canvas, { color: s.kind === 'vocal' ? cssVar('--wave-vocal') : undefined, onSeek: (t) => player.seek(t) });
+    w.set({ buffer: pl.buffer, phrases: s.analysis?.phrases || [] });
+    state.viewWaves.push(w);
+  }
+  return card;
+}
+
+const RAW_STAGES = [
+  ['backing', 'Backing vocals', 'Keeps the lead, removes doubles, harmonies and ad-lib layers'],
+  ['echo', 'Echo / delay', 'Removes delay throws and echoes'],
+  ['reverb', 'Reverb', 'Removes room, plate and hall reverb'],
+  ['noise', 'Noise', 'Removes hiss and leftover bleed from extraction'],
+];
+
+function rawDrawer(s) {
+  const go = el('button', {
+    class: 'btn small',
+    onclick: async () => {
+      const stages = Object.entries(state.rawStages).filter(([, on]) => on).map(([k]) => k);
+      if (!stages.length) { toast('Pick at least one thing to remove', true); return; }
+      try {
+        const r = await api(`/sources/${s.id}/raw-vocal`, { method: 'POST', body: { stages } });
+        state.open[s.id] = null;
+        await trackJob(s.id, r.job_id);
+        toast('Raw vocal ready');
+      } catch (e) { toast(e.message, true); }
+    },
+  }, 'Make raw');
+  return el('div', { class: 'drawer' },
+    el('span', { class: 'label', 'data-tip': "Autotune can't be undone — it changes the notes themselves." }, 'Remove'),
+    el('div', { class: 'row' }, ...RAW_STAGES.map(([id, label, tip]) => el('button', {
+      class: `chip${state.rawStages[id] ? ' on' : ''}`, 'data-tip': tip,
+      onclick: () => { state.rawStages[id] = !state.rawStages[id]; render(); },
+    }, label))),
+    go);
+}
+
+function tagDrawer(s) {
+  const pack = s.pack;
+  const info = state.packs.find((p) => p.id === pack);
+  const save = async (newPack, moods) => {
+    try {
+      const r = await api(`/sources/${s.id}/tag`, { method: 'POST', body: { pack: newPack, moods } });
+      state.packs = r.packs;
+      await refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  const packRow = el('div', { class: 'row' },
+    ...Object.entries(PACK_LABEL).map(([id, label]) => el('button', {
+      class: `chip${pack === id ? ' on' : ''}`,
+      onclick: () => save(pack === id ? null : id, pack === id ? [] : s.moods),
+    }, label)));
+  const parts = [el('span', { class: 'label', 'data-tip': 'Tagged tracks build that pack\'s LoRA. Mood tags become the training captions, so the prompt can pick a vibe later.' }, 'Training set'), packRow];
+  if (pack && info) {
+    const moods = [...new Set([...info.moods, ...s.moods])];
+    const custom = el('input', { class: 'mood-input', placeholder: '+ mood' });
+    custom.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && custom.value.trim()) { const v = custom.value.trim(); custom.value = ''; custom.blur(); save(pack, [...s.moods, v]); }
+    });
+    parts.push(el('span', { class: 'label' }, 'Mood'),
+      el('div', { class: 'row' }, ...moods.map((m) => el('button', {
+        class: `chip small${s.moods.includes(m) ? ' on' : ''}`,
+        onclick: () => save(pack, s.moods.includes(m) ? s.moods.filter((x) => x !== m) : [...s.moods, m]),
+      }, m)), custom));
+  }
+  return el('div', { class: 'drawer' }, ...parts);
+}
+
+// ---------- LoRA Packs page
+async function loadPacks() {
+  try {
+    state.packs = await api('/packs');
+    for (const p of state.packs) state.packItems[p.id] = await api(`/datasets/${p.id}`);
+  } catch (e) { toast(e.message, true); }
+}
+
+function viewPacks(view) {
+  view.append(el('h1', { 'data-tip': 'One LoRA per pack, shared across all your projects. Tag tracks on the Import page to add them.' }, 'LoRA Packs'));
+  if (!state.packs.length) { loadPacks().then(() => { if (state.step === 'packs') render(); }); return; }
+  const grid = el('div', { class: 'packs' });
+  for (const p of state.packs) {
+    const items = state.packItems[p.id] || [];
+    const pct = Math.min(100, (p.count / p.min_tracks) * 100);
+    const job = state.packJobs?.[p.id];
+    grid.append(el('div', { class: 'panel pack' },
+      el('div', { class: 'pack-head' },
+        el('strong', {}, p.label),
+        el('span', { class: 'badge', 'data-tip': p.training_audio === 'keep_backing' ? 'Lead vocal removed, choirs and backing vocals kept' : 'All vocals removed before training' },
+          p.training_audio === 'keep_backing' ? 'keeps backing vox' : 'instrumental')),
+      el('div', { class: 'pack-count mono' }, `${p.count}`, el('span', { class: 'dim' }, ` / ${p.min_tracks}`)),
+      el('div', { class: 'progress wide', 'data-tip': `${p.prepared} of ${p.count} prepared for training` }, el('div', { style: `width:${pct}%` })),
+      el('div', { class: 'pack-items' }, ...(items.length ? items.map((it) => el('div', { class: 'pack-item' },
+        el('span', { class: 'pi-name', 'data-tip': it.caption }, it.name),
+        it.prepared ? el('span', { class: 'ok-dot', 'data-tip': 'Prepared' }) : null,
+        el('button', { class: 'x', 'data-tip': 'Remove from this pack', onclick: async () => { state.packs = await api(`/datasets/${p.id}/${it.id}`, { method: 'DELETE' }); await loadPacks(); await refresh(); } }, '×')))
+        : [el('div', { class: 'dim small' }, 'No tracks yet')])),
+      el('div', { class: 'row' },
+        job ? el('div', { class: 'status' }, el('div', { class: 'progress' }, el('div', { style: `width:${job.progress * 100}%` })), el('span', { class: 'msg' }, job.message))
+          : el('button', {
+            class: 'btn small ghost', disabled: p.prepared >= p.count,
+            'data-tip': 'Strip vocals from the tracks so they\'re ready to train on',
+            onclick: () => preparePack(p.id),
+          }, 'Prepare'),
+        el('button', { class: 'btn small', disabled: true, 'data-tip': 'Training arrives with the Generate step' }, 'Train LoRA'))));
+  }
+  view.append(grid);
+}
+
+async function preparePack(id) {
+  state.packJobs = state.packJobs || {};
+  try {
+    const r = await api(`/datasets/${id}/prepare`, { method: 'POST' });
+    state.packJobs[id] = { progress: 0, message: 'Starting' };
+    render();
+    await waitJob(r.job_id, (j) => { state.packJobs[id] = { progress: j.progress, message: j.message }; });
+  } catch (e) { toast(e.message, true); }
+  delete state.packJobs[id];
+  await loadPacks();
+  render();
 }
 
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }

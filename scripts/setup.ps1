@@ -46,6 +46,9 @@ Step "Installing GLORE engine packages"
 & $Py -m pip install -r (Join-Path $Engine "requirements.txt")
 if ($LASTEXITCODE -ne 0) { Fail "Package install failed - send Claude the red error text above." }
 
+# yt-dlp needs to stay current - YouTube changes often
+& $Py -m pip install --upgrade yt-dlp --quiet
+
 # 5. Check the GPU -----------------------------------------------------
 Step "Checking GPU"
 $gpu = & $Py -c "import torch; print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE')"

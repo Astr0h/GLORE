@@ -16,8 +16,8 @@ from pydantic import BaseModel
 from . import __version__
 from .analysis import analyse, parse_key, key_name, camelot
 from .audio_io import SUPPORTED_EXTENSIONS, load_stereo, save_wav, duration_seconds
-from .project import ProjectStore, Source, Layer, JobRunner, KINDS, new_id
-from . import separation
+from .project import ProjectStore, Source, Layer, JobRunner, KINDS, PACKS, new_id
+from . import separation, cleanup, linkimport, datasets
 from .vocal_lock import lock_vocal
 
 
@@ -46,6 +46,20 @@ class OverrideBody(BaseModel):
     bpm: float | None = None
     key: str | None = None
     clear: bool = False
+
+
+class LinkBody(BaseModel):
+    url: str
+    kind: str | None = None
+
+
+class RawBody(BaseModel):
+    stages: list[str]
+
+
+class TagBody(BaseModel):
+    pack: str | None = None  # None = remove from training sets
+    moods: list[str] = []
 
 
 class LockBody(BaseModel):
@@ -101,6 +115,8 @@ def create_app(store: ProjectStore | None = None) -> FastAPI:
             if not 40 <= data["bpm"] <= 220:
                 raise HTTPException(400, "BPM must be between 40 and 220")
             p.bpm_locked_by_user = True
+        if "genre_pack" in data and data["genre_pack"] not in PACKS:
+            raise HTTPException(400, f"genre_pack must be one of {list(PACKS)}")
         if "monitor_mode" in data and data["monitor_mode"] not in ("headphones", "sound_system"):
             raise HTTPException(400, "monitor_mode must be headphones or sound_system")
         for k, v in data.items():
@@ -119,19 +135,120 @@ def create_app(store: ProjectStore | None = None) -> FastAPI:
             raise HTTPException(400, f"Unsupported file type {src_path.suffix}. Use WAV, MP3, FLAC, AIFF, or OGG.")
         if body.kind and body.kind not in KINDS:
             raise HTTPException(400, f"kind must be one of {KINDS}")
-        sid = new_id()
         try:
-            audio = load_stereo(src_path)
+            src = add_audio_source(src_path, src_path.stem, body.kind, str(src_path), "file")
         except Exception as e:
             raise HTTPException(400, f"Couldn't read that file: {e}")
-        fname = f"{sid}.wav"
-        save_wav(S().sources_dir / fname, audio)
-        src = Source(id=sid, name=src_path.stem, kind=body.kind or "full_song", file=fname,
-                     original_path=str(src_path), duration=round(duration_seconds(audio), 3))
-        S().add_source(src)
         # Analyse straight away so the tag guess + BPM/key arrive automatically
         job = _start_analysis(src, auto_kind=body.kind is None)
         return {"source": asdict(src), "job_id": job.id}
+
+    def add_audio_source(path: Path, name: str, kind: str | None, original: str, origin: str,
+                         derived_from: str | None = None) -> Source:
+        """Copy any audio into the project as 44.1k stereo WAV and register it."""
+        sid = new_id()
+        audio = load_stereo(path)
+        fname = f"{sid}.wav"
+        save_wav(S().sources_dir / fname, audio)
+        src = Source(id=sid, name=name, kind=kind or "full_song", file=fname, original_path=original,
+                     duration=round(duration_seconds(audio), 3), origin=origin, derived_from=derived_from)
+        S().add_source(src)
+        return src
+
+    # ------------------------------------------------------------ link import
+    @app.post("/sources/import-link")
+    def import_link(body: LinkBody):
+        try:
+            service = linkimport.detect_service(body.url)
+        except linkimport.LinkError as e:
+            raise HTTPException(400, str(e))
+        if body.kind and body.kind not in KINDS:
+            raise HTTPException(400, f"kind must be one of {KINDS}")
+
+        def work(report):
+            wav, info, tmp = linkimport.fetch_link(body.url, progress=report)
+            try:
+                name = linkimport.safe_name(f"{info.artist} - {info.title}" if info.artist else info.title)
+                report(0.9, "Adding to project")
+                src = add_audio_source(wav, name, body.kind, body.url, "link")
+            finally:
+                tmp.cleanup()
+            _start_analysis(src, auto_kind=body.kind is None)
+            return {"source_id": src.id, "service": service, "title": info.title,
+                    "artist": info.artist, "matched": info.matched}
+
+        return {"job_id": app.state.jobs.start("import_link", work).id, "service": service}
+
+    # -------------------------------------------------------------- raw vocal
+    @app.get("/raw-vocal/stages")
+    def raw_stages():
+        return [{"id": k, "label": cleanup.STAGE_LABELS[k]} for k in cleanup.STAGE_ORDER]
+
+    @app.post("/sources/{source_id}/raw-vocal")
+    def raw_vocal(source_id: str, body: RawBody):
+        src = get_source(source_id)
+        if src.kind != "vocal":
+            raise HTTPException(400, "Raw vocal works on samples tagged Vocal")
+        bad = [s for s in body.stages if s not in cleanup.STAGES]
+        if bad or not body.stages:
+            raise HTTPException(400, f"Choose from {cleanup.STAGE_ORDER}")
+        in_path = S().sources_dir / src.file
+
+        def work(report):
+            out = S().renders_dir / f"raw_{src.id}.wav"
+            cleanup.raw_vocal(in_path, out, body.stages, progress=lambda p, m: report(p * 0.92, m))
+            raw = add_audio_source(out, f"{src.name} (raw)", "vocal", src.original_path, "raw",
+                                   derived_from=src.derived_from or src.id)
+            raw.overrides = dict(src.overrides)  # keep any tempo/key the user corrected
+            S().save()
+            _start_analysis(raw, auto_kind=False)
+            return {"source_id": raw.id, "stages": body.stages}
+
+        return {"job_id": app.state.jobs.start("raw_vocal", work, gpu=True).id}
+
+    # ------------------------------------------------- genre tags / datasets
+    @app.get("/packs")
+    def packs():
+        return datasets.summary()
+
+    @app.post("/sources/{source_id}/tag")
+    def tag_source(source_id: str, body: TagBody):
+        src = get_source(source_id)
+        moods = sorted({m.strip() for m in body.moods if m.strip()}, key=str.lower)[:12]
+        datasets.remove_by_source(f"{S().root.name}:{src.id}")
+        if body.pack:
+            if body.pack not in PACKS:
+                raise HTTPException(400, f"pack must be one of {list(PACKS)}")
+            eff = src.effective()
+            datasets.add_or_update(body.pack, S().sources_dir / src.file, src.name, moods,
+                                   bpm=eff.get("bpm"), key=eff.get("key"),
+                                   source_ref=f"{S().root.name}:{src.id}")
+        src.pack, src.moods = body.pack, moods
+        S().save()
+        return {"source": asdict(src), "packs": datasets.summary()}
+
+    @app.get("/datasets/{pack}")
+    def dataset_items(pack: str):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        return datasets.list_items(pack)
+
+    @app.delete("/datasets/{pack}/{item_id}")
+    def dataset_remove(pack: str, item_id: str):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        datasets.remove(pack, item_id)
+        for s in S().project.sources:
+            if s.pack == pack and not datasets.find_by_source(f"{S().root.name}:{s.id}"):
+                s.pack, s.moods = None, []
+        S().save()
+        return datasets.summary()
+
+    @app.post("/datasets/{pack}/prepare")
+    def dataset_prepare(pack: str):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        return {"job_id": app.state.jobs.start("prepare", lambda r: datasets.prepare(pack, r), gpu=True).id}
 
 
     @app.post("/sources/{source_id}/kind")

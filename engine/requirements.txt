@@ -1,0 +1,8 @@
+# PyTorch (CUDA build) is installed separately by scripts/setup.ps1 before this file.
+numpy>=1.26,<3
+librosa>=0.10.2
+soundfile>=0.12.1
+pedalboard>=0.9.12
+fastapi>=0.115
+uvicorn>=0.30
+demucs==4.0.1

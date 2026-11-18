@@ -12,6 +12,8 @@ job.json:
   lora         {"path": ..., "trigger": "glore_house", "scale": 1.0} or null
   bpm, key, duration (s), seed (-1 = random), count (takes per run), steps, shift
   offload      move the parts not in use to system RAM (needed on 8 GB cards)
+  rewrite_caption  let the song planner expand the prompt (default on when lm is set)
+  velocity_norm    clamp DiT velocity norms (0 = off; ACE suggests 2.0 against harsh artefacts)
   mode         text2music (default) | cover (src_audio, strength 0-1) | complete (src_audio, tracks; base only)
 """
 
@@ -93,7 +95,11 @@ def main(job_path: str) -> int:
         shift=float(job.get("shift", 3.0 if variant == "turbo" else 1.0)),
         seed=int(job.get("seed", -1)),
         thinking=bool(llm),
-        use_cot_metas=False, use_cot_caption=False, use_cot_language=False,  # keep our BPM/key/caption
+        # The planner rewrites a short prompt into a full description (ACE's default; it's how the LoRA's
+        # auto-captions were written, so prompt and LoRA speak the same language). BPM/key stay ours.
+        use_cot_caption=bool(llm) and bool(job.get("rewrite_caption", True)),
+        use_cot_metas=False, use_cot_language=False,
+        velocity_norm_threshold=float(job.get("velocity_norm", 0.0)),
     )
     if job.get("mode") == "complete":
         # Build the other instruments around an existing part (e.g. your vocal). Base model only.

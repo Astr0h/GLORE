@@ -88,6 +88,7 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
              use_lora: bool = True, caption: str | None = None, bpm: float | None = None, key: str | None = None,
              duration: float = 60.0, seed: int = -1, count: int = 1, scale: float = 1.0,
              offload: bool = True, lm: str | None = "acestep-5Hz-lm-1.7B",
+             rewrite_caption: bool = True, velocity_norm: float = 0.0,
              export_dir: str | None = None) -> dict:
     lora = find_lora(lora_run, pack) if use_lora else None
     if use_lora and not lora:
@@ -109,7 +110,8 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
            "caption": caption if caption is not None else default_caption(pack),
            "lora": {"path": lora["path"], "trigger": lora.get("trigger"), "scale": scale} if lora else None,
            "bpm": bpm, "key": key, "duration": duration, "seed": seed, "count": count,
-           "steps": inference.get("steps"), "shift": inference.get("shift"), "offload": offload, "lm": lm}
+           "steps": inference.get("steps"), "shift": inference.get("shift"), "offload": offload, "lm": lm,
+           "rewrite_caption": rewrite_caption, "velocity_norm": velocity_norm}
     (tmp / "job.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
 
     result = run_generator(ace, job, tmp, gen_dir / f"{gid}.log", report)

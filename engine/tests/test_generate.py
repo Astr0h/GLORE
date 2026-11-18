@@ -54,6 +54,16 @@ def test_generate_adds_takes_as_layers(store):
     assert not list((store.root / "generated").glob("_*"))  # temp folder cleaned up
 
 
+def test_generate_lets_the_planner_rewrite_the_prompt_by_default(store, monkeypatch):
+    seen = {}
+    real = gen.run_generator
+    monkeypatch.setattr(gen, "run_generator", lambda ace, job, *a, **k: (seen.update(job), real(ace, job, *a, **k))[1])
+    gen.generate(store, lambda p, m: None, caption="house")
+    assert seen["rewrite_caption"] is True and seen["velocity_norm"] == 0.0 and seen["lm"]
+    gen.generate(store, lambda p, m: None, caption="house", rewrite_caption=False, velocity_norm=2.0)
+    assert seen["rewrite_caption"] is False and seen["velocity_norm"] == 2.0
+
+
 def test_generate_without_lora_and_errors(store, tmp_path):
     res = gen.generate(store, lambda p, m: None, use_lora=False)
     assert res["lora"] is None and res["caption"] == "house"

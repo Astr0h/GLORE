@@ -219,3 +219,11 @@ def test_instrumental_source_needs_the_original(store):
     store.add_source(Source(id="v", name="My vocal", kind="vocal", file="v.wav", original_path="x", duration=1))
     with pytest.raises(gen.GenerateError, match="full song"):
         gen.generate_from_song(store, lambda p, m: None, vocal_source="v", source="instrumental")
+
+
+def test_short_name_keeps_paths_under_windows_limit():
+    long = ("emotional UK house, chopped and pitched vocal samples, warm soft piano chords, shuffled "
+            "garage-style drums with crisp claps, deep rolling sub bass: atmospheric/pads?")
+    n = gen.short_name(long)
+    assert len(n) <= 49 and n.endswith("…") and not any(c in n for c in '<>:"/\\|?*')
+    assert gen.short_name("house") == "house"

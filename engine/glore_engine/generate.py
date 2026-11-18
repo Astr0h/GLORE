@@ -129,7 +129,7 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
         take = {"layer_id": layer.id, "file": layer.file, "seed": f.get("seed")}
         if export_dir:
             tag = "LoRA" if lora else "no LoRA"
-            mp3 = Path(export_dir) / f"GLORE {caption or default_caption(pack)} ({tag}, seed {f.get('seed')}).mp3"
+            mp3 = Path(export_dir) / f"GLORE {short_name(caption or default_caption(pack))} ({tag}, seed {f.get('seed')}).mp3"
             _mp3(gen_dir / name, mp3)
             take["mp3"] = str(mp3)
         takes.append(take)
@@ -238,6 +238,15 @@ def generate_from_song(store: ProjectStore, report: Report, *, vocal_source: str
 
 
 # ---------------------------------------------------------------- around a vocal
+
+def short_name(text: str, limit: int = 48) -> str:
+    """A prompt as a safe, short file-name part (Windows paths max out at 260 characters)."""
+    t = "".join(c for c in " ".join(str(text).split()) if c not in '<>:"/\\|?*').strip(" .")
+    if len(t) <= limit:
+        return t
+    cut = t[:limit].rsplit(" ", 1)[0].rstrip(" ,")
+    return (cut or t[:limit]) + "…"
+
 
 def _mp3(wav: Path, mp3: Path) -> None:
     import imageio_ffmpeg

@@ -429,6 +429,12 @@ def test_train_full_tracks_with_captions_and_checkpoints(cl, monkeypatch):
     assert (Path(ck[f"{info['run_id']}@e2"]["path"]) / "adapter_model.safetensors").read_bytes() == b"weights-e2"
     caps = json.loads(Path(info["captions"]).read_text())
     assert len(caps) == 3
+    from fastapi.testclient import TestClient
+    from glore_engine.server import create_app
+    c = TestClient(create_app())
+    rows = c.get(f"/loras/{info['run_id']}/captions").json()
+    assert len(rows) == 3 and rows[0]["caption"].startswith("glore_house, deep house") and rows[0]["track"]
+    assert c.get("/loras/nope/captions").status_code == 404
 
 
 def test_checkpoint_names(tmp_path):

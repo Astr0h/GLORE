@@ -135,7 +135,8 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
         takes.append(take)
     store.save()
     shutil.rmtree(tmp, ignore_errors=True)
-    return {"takes": takes, "caption": result.get("caption"), "seconds": result.get("seconds"),
+    return {"takes": takes, "caption": result.get("caption"), "planned_caption": result.get("planned_caption"),
+            "seconds": result.get("seconds"),
             "peak_vram_gb": result.get("peak_vram_gb"), "lora": (lora or {}).get("run_id")}
 
 

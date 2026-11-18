@@ -73,6 +73,25 @@ def main(job_path: str) -> int:
             raise RuntimeError(f"Song planner didn't load: {lm_msg}")
 
     caption = (job.get("caption") or "").strip()
+    planned_caption = None
+    if llm and job.get("rewrite_caption", True) and job.get("mode") not in ("cover", "complete"):
+        # ACE's "Format": the planner expands a short prompt into a full description in the
+        # same style it captioned the LoRA's training tracks with. (generate_music's own CoT
+        # caption step is skipped whenever BPM/key/duration are all given, as ours always are.)
+        say(0.22, "Planning the song")
+        from acestep.inference import format_sample
+        meta = {k: v for k, v in {"bpm": int(round(job["bpm"])) if job.get("bpm") else None,
+                                  "keyscale": job.get("key") or None,
+                                  "duration": int(job["duration"]) if job.get("duration") else None,
+                                  "timesignature": "4"}.items() if v}
+        try:
+            fr = format_sample(llm, caption or "house", "[Instrumental]", user_metadata=meta)
+            if getattr(fr, "success", False) and (fr.caption or "").strip():
+                planned_caption = " ".join(fr.caption.split())
+                print(f"[glore] planner caption: {planned_caption}", flush=True)
+                caption = planned_caption
+        except Exception as e:  # keep going with the user's prompt
+            print(f"[glore] planner caption failed: {e}", flush=True)
     lora = job.get("lora")
     if lora:
         say(0.25, "Loading the LoRA")
@@ -97,8 +116,7 @@ def main(job_path: str) -> int:
         thinking=bool(llm),
         # The planner rewrites a short prompt into a full description (ACE's default; it's how the LoRA's
         # auto-captions were written, so prompt and LoRA speak the same language). BPM/key stay ours.
-        use_cot_caption=bool(llm) and bool(job.get("rewrite_caption", True)),
-        use_cot_metas=False, use_cot_language=False,
+        use_cot_caption=False, use_cot_metas=False, use_cot_language=False,  # caption planned above
         velocity_norm_threshold=float(job.get("velocity_norm", 0.0)),
     )
     if job.get("mode") == "complete":
@@ -129,7 +147,7 @@ def main(job_path: str) -> int:
         raise RuntimeError(result.error or result.status_message or "Generation failed")
     files = [{"path": a.get("path"), "seed": (a.get("params") or {}).get("seed")} for a in result.audios]
     peak = torch.cuda.max_memory_allocated() / 2 ** 30 if torch.cuda.is_available() else 0
-    print("GLORE_RESULT " + json.dumps({"files": files, "caption": caption, "seconds": round(time.time() - t0, 1),
+    print("GLORE_RESULT " + json.dumps({"files": files, "caption": caption, "planned_caption": planned_caption, "seconds": round(time.time() - t0, 1),
                                         "peak_vram_gb": round(peak, 2)}), flush=True)
     return 0
 

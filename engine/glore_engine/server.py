@@ -4,6 +4,7 @@ Binds to 127.0.0.1 only; nothing leaves your machine."""
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -629,6 +630,19 @@ def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | 
             raise HTTPException(404, "No such log yet")
         text = path.read_text(encoding="utf-8", errors="replace").splitlines()
         return {"path": str(path), "text": "\n".join(text[-max(1, min(lines, 2000)):])}
+
+    @app.get("/loras/{run_id}/captions")
+    def lora_captions(run_id: str):
+        """The captions ACE-Step's planner wrote for each training track (auto-labelled runs)."""
+        info = next((l for l in training.list_loras() if l.get("run_id") == run_id), None)
+        if not info:
+            raise HTTPException(404, "Unknown LoRA")
+        path = info.get("captions")
+        if not path or not Path(path).exists():
+            raise HTTPException(404, "This LoRA has no captions")
+        items = {i["id"]: i.get("name") for i in datasets.list_items(info["pack"])} if info.get("pack") else {}
+        caps = json.loads(Path(path).read_text(encoding="utf-8"))
+        return [{"id": k, "track": items.get(k), **v} for k, v in caps.items()]
 
     @app.get("/loras")
     def loras():

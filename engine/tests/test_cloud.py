@@ -500,3 +500,13 @@ def test_sold_out_gpu_falls_back_and_leaves_no_stale_job(cl, monkeypatch):
 def test_gpu_choices_order():
     ch = cloud.gpu_choices(FakeRunPod.GPUS, "EU-RO-1", "A4000, H100, A100")
     assert [c[0] for c in ch] == ["NVIDIA RTX A4000", "NVIDIA H100 80GB HBM3", "NVIDIA A100-SXM4-80GB"]
+
+
+def test_trainer_runs_from_a_folder_holding_ace_and_data(tmp_path):
+    # ACE-Step's path_safety only accepts paths under the trainer's cwd
+    ace = glore_pod.Ace(tmp_path / "ace", ["uv"], {})
+    tensors, out = tmp_path / "tensors" / "house" / "h", tmp_path / "loras" / "house" / "r"
+    assert ace.workdir(tensors, out) == tmp_path.resolve()
+    cmd = ace.train_cmd(tensors, out, "turbo", training.train_params(10))
+    assert cmd[:6] == ["uv", "run", "--no-sync", "--project", str(tmp_path / "ace"), "python"]
+    assert cmd[6] == str(tmp_path / "ace" / "train.py")

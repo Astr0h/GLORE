@@ -165,8 +165,18 @@ class Ace:
         self.ckpt = ace_dir / "checkpoints"
 
     def py(self, *args: str) -> list[str]:
-        # --no-sync: never let uv rewrite the env (it would drop extras like bitsandbytes)
-        return [*self.uv, "run", "--no-sync", "python", *args]
+        # --no-sync: never let uv rewrite the env (it would drop extras like bitsandbytes).
+        # --project lets the command run from another folder (see workdir).
+        return [*self.uv, "run", "--no-sync", "--project", str(self.dir), "python", *args]
+
+    def train_py(self, *args: str) -> list[str]:
+        return self.py(str(self.dir / "train.py"), *args)
+
+    def workdir(self, *paths: Path) -> Path:
+        """ACE-Step's trainer only accepts data paths under the folder it was started from
+        (acestep/training/path_safety.py uses the cwd), so start it from a folder that holds
+        both ACE-Step and our data: /workspace on the pod, %APPDATA%/GLORE on the PC."""
+        return Path(os.path.commonpath([str(Path(x).resolve()) for x in (self.dir, *paths)]))
 
     def ensure(self, variant: str, log, status: Status, extras: tuple[str, ...] = ()) -> None:
         marker = self.dir / ".glore_ready"
@@ -223,22 +233,22 @@ class Ace:
             shutil.rmtree(tensor_dir, ignore_errors=True)
         tensor_dir.mkdir(parents=True, exist_ok=True)
         status.update(phase="preprocessing", message="Encoding tracks for training")
-        cmd = self.py("train.py", "--plain", "--yes", "fixed",
-                      "--checkpoint-dir", str(self.ckpt), "--model-variant", variant,
-                      "--preprocess", "--dataset-json", str(dataset_json),
+        cmd = self.train_py("--plain", "--yes", "fixed",
+                            "--checkpoint-dir", str(self.ckpt), "--model-variant", variant,
+                            "--preprocess", "--dataset-json", str(dataset_json),
                       "--tensor-output", str(tensor_dir), "--max-duration", str(max_duration),
                       # required by the parser even though preprocessing ignores them
                       "--dataset-dir", str(tensor_dir), "--output-dir", str(tensor_dir / "_unused"))
-        code, _ = run(cmd, self.dir, self.env, log)
+        code, _ = run(cmd, self.workdir(dataset_json, tensor_dir), self.env, log)
         if code or not any(tensor_dir.glob("*.pt")):
             raise RuntimeError("Preprocessing failed (see log)")
         done.write_text(str(now()))
 
     def train_cmd(self, tensor_dir: Path, out_dir: Path, variant: str, p: dict) -> list[str]:
         inf = VARIANT_INFERENCE[variant]
-        cmd = self.py("train.py", "--plain", "--yes", "fixed",
-                      "--checkpoint-dir", str(self.ckpt), "--model-variant", variant,
-                      "--dataset-dir", str(tensor_dir), "--output-dir", str(out_dir),
+        cmd = self.train_py("--plain", "--yes", "fixed",
+                            "--checkpoint-dir", str(self.ckpt), "--model-variant", variant,
+                            "--dataset-dir", str(tensor_dir), "--output-dir", str(out_dir),
                       "--epochs", str(p["epochs"]), "--lr", str(p.get("lr", 1e-4)),
                       "--rank", str(p.get("rank", 64)), "--alpha", str(p.get("alpha", 128)),
                       "--batch-size", str(p.get("batch_size", 1)),
@@ -292,8 +302,8 @@ def run_train_job(job: dict, root: Path, ace: Ace, log, status: Status, should_s
         elif OOM_RE.search(line):
             status.update(oom=True)
 
-    code, stopped = run(ace.train_cmd(tensor_dir, out_dir, variant, job["params"]), ace.dir, ace.env,
-                        log, on_line=on_line, should_stop=should_stop)
+    code, stopped = run(ace.train_cmd(tensor_dir, out_dir, variant, job["params"]),
+                        ace.workdir(tensor_dir, out_dir), ace.env, log, on_line=on_line, should_stop=should_stop)
     final = out_dir / "final"
     if stopped:
         raise StoppedError("Stopped before the end. Checkpoints are kept, so Train again resumes.")
@@ -351,8 +361,8 @@ def run_fit_test(ace: Ace, dataset_json: Path, tensor_dir: Path, out_dir: Path, 
             oom = True
 
     status.update(phase="training", message="Loading the model on your GPU")
-    run(ace.train_cmd(tensor_dir, out_dir, variant, params), ace.dir, ace.env, log, on_line=on_line,
-        timeout=train_seconds)
+    run(ace.train_cmd(tensor_dir, out_dir, variant, params), ace.workdir(tensor_dir, out_dir), ace.env, log,
+        on_line=on_line, timeout=train_seconds)
     stop.set()
     sec_per_step = (steps[-1] - steps[0]) / (len(steps) - 1) if len(steps) > 1 else None
     verdict = "no" if oom else ("yes" if steps else "unclear")

@@ -65,7 +65,25 @@ def section_map(drums: np.ndarray, bass: np.ndarray, music: np.ndarray) -> list[
         bars.append(Bar(drums=dr, bass="off" if b[i] < MUTE_DB else "on",
                         music="low" if (m[i] < -8 or dr == "off") else "full"))
     _smooth(bars)
+    _bassless_runs_are_light(bars)
     return bars
+
+
+def _bassless_runs_are_light(bars: list[Bar], min_bars: int = 4) -> None:
+    """Drums playing with no bass for a while (a typical intro or build) = a light part:
+    level alone misses it when the hats are as loud as the full beat."""
+    i, n = 0, len(bars)
+    while i < n:
+        if bars[i].drums == "off" or bars[i].bass == "on":
+            i += 1
+            continue
+        j = i
+        while j < n and bars[j].drums != "off" and bars[j].bass == "off":
+            j += 1
+        if j - i >= min_bars:
+            for k in range(i, j):
+                bars[k].drums = "light"
+        i = j
 
 
 def _smooth(bars: list[Bar]) -> None:

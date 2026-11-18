@@ -45,3 +45,10 @@ def test_arrange_stems_mutes_drums_in_breakdown_and_opens_filter():
     out = arrange.arrange_stems({"drums": np.zeros((2, n), np.float32), "bass": np.zeros((2, n), np.float32),
                                  "other": stems["other"]}, sr, bars, [0, 2, 4, 6])
     assert rms(2, 4) < 0.6 * rms(0, 2) and abs(rms(6, 8) - rms(0, 2)) < 0.01
+
+
+def test_drums_without_bass_for_a_while_is_light():
+    drums = np.full(16, -27.0)                      # hats as loud as the full beat
+    bass = np.array([-80] * 8 + [-10] * 8, float)   # no bass in the intro
+    bars = arrange.section_map(drums, bass, np.full(16, -20.0))
+    assert [b.drums for b in bars[:8]] == ["light"] * 8 and bars[8].drums == "full"

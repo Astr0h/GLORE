@@ -140,3 +140,43 @@ def test_vocal_over_beat_end_to_end(store, tmp_path, monkeypatch):
     assert abs(res["beat_bpm"] - 128) < 3 and res["song_bpm"] == 128.5
     assert 0 <= res["offset_s"] < 240 / res["beat_bpm"]
     assert (store.root / res["file"]).exists() and res["mp3"].endswith("Song (GLORE).mp3")
+
+
+def test_generate_from_song_covers_the_instrumental_and_lays_the_vocal(store, tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    from glore_engine.project import Source
+
+    sr = 44100
+    store.sources_dir.mkdir(parents=True, exist_ok=True)
+    sf.write(store.sources_dir / "song.wav", np.zeros((sr, 2), "float32"), sr)
+    sf.write(store.sources_dir / "v.wav", np.full((sr // 2, 2), 0.1, "float32"), sr)
+    store.add_source(Source(id="song", name="Song", kind="full_song", file="song.wav", original_path="x", duration=1,
+                            analysis={"bpm": 129.2, "key_name": "E minor"}))
+    store.add_source(Source(id="v", name="Song (vocal)", kind="vocal", file="v.wav", original_path="x", duration=0.5,
+                            derived_from="song"))
+    noise = lambda: (np.random.default_rng(1).standard_normal((2, sr)) * 0.1).astype("float32")
+    monkeypatch.setattr(gen, "_stems_of", lambda *a, **k: {"drums": noise(), "bass": noise(), "other": noise(),
+                                                           "vocals": noise()})
+    seen = {}
+    real = gen.run_generator
+    monkeypatch.setattr(gen, "run_generator", lambda ace, job, *a, **k: (seen.update(job), real(ace, job, *a, **k))[1])
+    monkeypatch.setattr(gen, "_mp3", lambda wav, mp3: (mp3.parent.mkdir(parents=True, exist_ok=True), mp3.write_bytes(b"x")))
+
+    res = gen.generate_from_song(store, lambda p, m: None, vocal_source="v", caption="heavy house",
+                                 strength=0.6, export_dir=str(tmp_path / "o"))
+    assert seen["mode"] == "cover" and seen["strength"] == 0.6 and seen["lm"] is None
+    assert seen["bpm"] == 129.2 and seen["key"] == "E minor" and abs(seen["duration"] - 1.0) < 0.01
+    assert seen["lora"]["trigger"] == "glore_house"
+    src = sf.read(seen["src_audio"])[0] if Path(seen["src_audio"]).exists() else None
+    assert src is None  # temp folder is cleaned up afterwards
+    ids = {l.id for l in store.project.layers}
+    assert res["beat_layer"] in ids and res["song_layer"] in ids
+    assert res["mp3"].endswith("Song (GLORE).mp3") and res["beat_mp3"].endswith("Song (GLORE) beat.mp3")
+
+
+def test_generate_from_song_needs_the_original(store):
+    from glore_engine.project import Source
+    store.add_source(Source(id="v", name="My vocal", kind="vocal", file="v.wav", original_path="x", duration=1))
+    with pytest.raises(gen.GenerateError, match="full song"):
+        gen.generate_from_song(store, lambda p, m: None, vocal_source="v")

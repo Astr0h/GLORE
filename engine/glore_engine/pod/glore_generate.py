@@ -12,6 +12,7 @@ job.json:
   lora         {"path": ..., "trigger": "glore_house", "scale": 1.0} or null
   bpm, key, duration (s), seed (-1 = random), count (takes per run), steps, shift
   offload      move the parts not in use to system RAM (needed on 8 GB cards)
+  mode         text2music (default) | cover (src_audio, strength 0-1) | complete (src_audio, tracks; base only)
 """
 
 from __future__ import annotations
@@ -101,6 +102,12 @@ def main(job_path: str) -> int:
                                   instruction=f"Complete the input track with {tracks}:",
                                   guidance_scale=float(job.get("guidance", 7.0)),
                                   duration=float(job.get("duration") or -1), **common)
+    elif job.get("mode") == "cover":
+        # Remake a song in a new style, keeping its bars, rhythm, chords and structure (works on turbo + LoRA).
+        # Fed the instrumental a vocal was written to, the new beat lines up with that vocal.
+        params = GenerationParams(task_type="cover", src_audio=job["src_audio"], instrumental=True,
+                                  audio_cover_strength=float(job.get("strength", 0.7)),
+                                  duration=float(job.get("duration") or -1), **common)
     else:
         params = GenerationParams(task_type="text2music", instrumental=True,
                                   duration=float(job.get("duration", 60)), **common)
@@ -108,7 +115,8 @@ def main(job_path: str) -> int:
     count = max(1, int(job.get("count", 1)))
     config = GenerationConfig(batch_size=count, audio_format="wav",
                               use_random_seed=seed < 0, seeds=None if seed < 0 else [seed + i for i in range(count)])
-    say(0.35, "Building around your vocal" if job.get("mode") == "complete" else f"Generating {params.duration:.0f} s")
+    say(0.35, {"complete": "Building around your vocal", "cover": "Rebuilding the song as a new beat"}
+        .get(job.get("mode"), f"Generating {params.duration:.0f} s"))
     os.makedirs(job["out_dir"], exist_ok=True)
     result = generate_music(dit, llm, params, config, save_dir=job["out_dir"])
     if not result.success:

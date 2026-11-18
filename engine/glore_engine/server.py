@@ -121,6 +121,22 @@ class VocalOverBeatBody(BaseModel):
     name: str | None = None
 
 
+class FromSongBody(BaseModel):
+    vocal_source: str
+    grid_source: str | None = None   # default: the song the vocal was extracted from
+    pack: str = "house"
+    lora_run: str | None = None
+    use_lora: bool = True
+    caption: str | None = None
+    strength: float = 0.7            # how closely the new beat follows the original (0-1)
+    seed: int = -1
+    scale: float = 1.0
+    vocal_gain_db: float = -4.0
+    beat_gain_db: float = 0.0
+    export_dir: str | None = None
+    name: str | None = None
+
+
 class TrainBody(BaseModel):
     epochs: int | None = None   # default: picked from the track count
     rank: int | None = None     # default 64
@@ -570,6 +586,16 @@ def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | 
                 raise RuntimeError(str(e)) from None
 
         return _cloud_job("generate", "generate_around_vocal", work, gpu=True)
+
+    @app.post("/generate/from-song")
+    def generate_from_song(body: FromSongBody):
+        def work(report):
+            try:
+                return gen.generate_from_song(S(), report, **body.model_dump())
+            except (gen.GenerateError, KeyError, ValueError) as e:
+                raise RuntimeError(str(e)) from None
+
+        return {"job_id": app.state.jobs.start("generate_from_song", work, gpu=True).id}
 
     @app.post("/mix/vocal-over-beat")
     def vocal_over_beat(body: VocalOverBeatBody):

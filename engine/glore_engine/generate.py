@@ -137,6 +137,90 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
             "peak_vram_gb": result.get("peak_vram_gb"), "lora": (lora or {}).get("run_id")}
 
 
+# ---------------------------------------------------------------- from the song a vocal came from
+
+def generate_from_song(store: ProjectStore, report: Report, *, vocal_source: str, grid_source: str | None = None,
+                       pack: str = "house", lora_run: str | None = None, use_lora: bool = True,
+                       caption: str | None = None, strength: float = 0.7, seed: int = -1, scale: float = 1.0,
+                       vocal_gain_db: float = -4.0, beat_gain_db: float = 0.0,
+                       export_dir: str | None = None, name: str | None = None) -> dict:
+    """A new beat built from the song the vocal was written to (ACE-Step cover).
+    The original instrumental (Demucs drums + bass + other) is the source: the new beat keeps its
+    bars, groove, chords, breakdowns and drops, in your style, so the vocal sits on it as it did on
+    the original. No stretching or bar matching needed: it's the original's own timeline."""
+    import numpy as np
+    from . import audio_io
+
+    vocal = store.source(vocal_source)
+    song = store.source(grid_source) if grid_source else (
+        store.source(vocal.derived_from) if vocal.derived_from else None)
+    if not song:
+        raise GenerateError("This needs the full song the vocal came from")
+    lora = find_lora(lora_run, pack) if use_lora else None
+    if use_lora and not lora:
+        raise GenerateError(f"No {PACKS[pack]['label']} LoRA yet. Train one, or turn the LoRA off.")
+    variant = (lora or {}).get("variant", "turbo")
+    inference = (lora or {}).get("inference") or glore_pod.VARIANT_INFERENCE[variant]
+    sa = song.effective()
+    sr = audio_io.PROJECT_SR
+
+    report(0.01, "Checking ACE-Step")
+    ace = ensure_ace(lambda pr, m: report(0.02, m), variant)
+    gid = new_id()
+    gen_dir = store.root / "generated"
+    tmp = gen_dir / f"_{gid}"
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    report(0.03, "Taking the vocal out of the original")
+    stems = _stems_of(store, report, song.id, store.sources_dir / song.file, 0.03, 0.12)
+    n = max(stems[k].shape[1] for k in ("drums", "bass", "other"))
+    inst = sum(np.pad(stems[k], ((0, 0), (0, n - stems[k].shape[1]))) for k in ("drums", "bass", "other"))
+    src = tmp / "instrumental.wav"
+    audio_io.save_wav(src, inst, sr, subtype="PCM_16")
+
+    caption = caption if caption is not None else default_caption(pack)
+    job = {"mode": "cover", "src_audio": str(src), "strength": strength,
+           "ace_dir": str(ace.dir), "out_dir": str(tmp), "variant": variant, "caption": caption,
+           "lora": {"path": lora["path"], "trigger": lora.get("trigger"), "scale": scale} if lora else None,
+           "bpm": sa.get("bpm"), "key": sa.get("key_name") or sa.get("key"), "duration": n / sr,
+           "seed": seed, "count": 1, "steps": inference.get("steps"), "shift": inference.get("shift"),
+           "offload": True, "lm": None}
+    (tmp / "job.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
+    result = run_generator(ace, job, tmp, gen_dir / f"{gid}.log", report, 0.16, 0.7)
+
+    report(0.88, "Laying the vocal on it")
+    take = result["files"][0]
+    beat_rel = f"generated/{gid}-beat.wav"
+    shutil.move(str(take["path"]), store.root / beat_rel)
+    beat = audio_io.load_stereo(store.root / beat_rel, sr)
+    voc = audio_io.load_stereo(store.sources_dir / vocal.file, sr)
+    n = max(beat.shape[1], voc.shape[1])
+    pad = lambda x: np.pad(x, ((0, 0), (0, n - x.shape[1])))
+    mix = pad(voc) * 10 ** (vocal_gain_db / 20) + pad(beat) * 10 ** (beat_gain_db / 20)
+    mix *= 0.89 / max(1e-6, float(np.max(np.abs(mix))))
+    song_rel = f"generated/{gid}-song.wav"
+    audio_io.save_wav(store.root / song_rel, mix, sr)
+
+    title = name or vocal.name.replace(" (vocal)", "")
+    label = PACKS[pack]["label"] if lora else "No LoRA"
+    store.upsert_layer(Layer(id=f"gen-{gid}-beat", name=f"Beat · {label} · from {song.name}", file=beat_rel,
+                             role="generated"))
+    store.upsert_layer(Layer(id=f"gen-{gid}-song", name=f"Song · {title}", file=song_rel, role="generated"))
+    store.save()
+    shutil.rmtree(tmp, ignore_errors=True)
+    out = {"beat_layer": f"gen-{gid}-beat", "song_layer": f"gen-{gid}-song", "seed": take.get("seed"),
+           "strength": strength, "seconds": result.get("seconds"), "peak_vram_gb": result.get("peak_vram_gb"),
+           "lora": (lora or {}).get("run_id")}
+    if export_dir:
+        safe = "".join(c for c in f"{title} (GLORE)" if c not in '<>:"/\\|?*').strip()
+        for kind, rel, fname in (("mp3", song_rel, safe), ("beat_mp3", beat_rel, f"{safe} beat")):
+            mp3 = Path(export_dir) / f"{fname}.mp3"
+            _mp3(store.root / rel, mp3)
+            out[kind] = str(mp3)
+    report(1.0, "Done")
+    return out
+
+
 # ---------------------------------------------------------------- around a vocal
 
 def _mp3(wav: Path, mp3: Path) -> None:

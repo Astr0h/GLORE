@@ -67,3 +67,34 @@ def test_generate_endpoint_validation(tmp_path):
     assert c.post("/generate", json={"count": 9}).status_code == 400
     assert c.post("/generate", json={"pack": "nope"}).status_code == 404
     assert c.get("/logs/fit-test").status_code == 404
+
+
+def test_around_vocal_mixes_clean_vocal_over_new_beat(store, tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    from glore_engine import separation
+    from glore_engine.project import Source
+
+    sr = 44100
+    t = np.arange(sr * 2) / sr
+    vfile = store.sources_dir / "v1.wav"
+    store.sources_dir.mkdir(parents=True, exist_ok=True)
+    sf.write(vfile, np.stack([0.3 * np.sin(2 * np.pi * 440 * t)] * 2, 1).astype("float32"), sr)
+    store.add_source(Source(id="v1", name="Song (vocal)", kind="vocal", file="v1.wav", original_path="x",
+                            duration=2.0, analysis={"bpm": 124.0, "key": "F minor"}))
+
+    def fake_sep(path, out_dir, progress=None, **kw):
+        out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+        stems = {}
+        for name, f in (("drums", 60), ("bass", 80), ("other", 300), ("vocals", 440)):
+            stems[name] = out / f"{name}.wav"
+            sf.write(stems[name], np.stack([0.1 * np.sin(2 * np.pi * f * t)] * 2, 1).astype("float32"), sr)
+        return stems
+
+    monkeypatch.setattr(separation, "separate", fake_sep)
+    monkeypatch.setattr(gen, "_mp3", lambda wav, mp3: (mp3.parent.mkdir(parents=True, exist_ok=True), mp3.write_bytes(b"mp3")))
+    res = gen.generate_around_vocal(store, lambda p, m: None, export_dir=str(tmp_path / "out"))
+    assert set(res["files"]) == {"beat", "mix"} and res["vocal"] == "Song (vocal)"
+    mix, _ = sf.read(store.root / res["files"]["mix"])
+    assert 0.85 < np.max(np.abs(mix)) < 0.9            # normalised to about -1 dBFS
+    assert Path(res["mp3"]).name == "Song - GLORE soft house.mp3"

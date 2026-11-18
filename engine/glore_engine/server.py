@@ -96,6 +96,17 @@ class GenerateBody(BaseModel):
     scale: float = 1.0
 
 
+class AroundVocalBody(BaseModel):
+    source_id: str | None = None   # default: the locked vocal, else the newest vocal
+    caption: str = "soft house"
+    tracks: list[str] | None = None
+    seed: int = -1
+    steps: int = 50
+    guidance: float = 7.0
+    beat_gain_db: float = -3.0
+    export_dir: str | None = None  # also write an MP3 of the mix here
+
+
 class TrainBody(BaseModel):
     epochs: int | None = None   # default: picked from the track count
     rank: int | None = None     # default 64
@@ -532,6 +543,19 @@ def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | 
                 raise RuntimeError(str(e)) from None
 
         return _cloud_job("generate", "generate", work, gpu=True)
+
+    @app.post("/generate/around-vocal")
+    def generate_around(body: AroundVocalBody):
+        if not 8 <= body.steps <= 100:
+            raise HTTPException(400, "Steps must be 8-100")
+
+        def work(report):
+            try:
+                return gen.generate_around_vocal(S(), report, **body.model_dump())
+            except gen.GenerateError as e:
+                raise RuntimeError(str(e)) from None
+
+        return _cloud_job("generate", "generate_around_vocal", work, gpu=True)
 
     @app.get("/logs/{name}")
     def log_tail(name: str, lines: int = 80):

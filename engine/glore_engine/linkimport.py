@@ -9,6 +9,7 @@ ffmpeg comes bundled via imageio-ffmpeg, so nothing extra to install."""
 from __future__ import annotations
 
 import html
+import json
 import re
 import tempfile
 import urllib.request
@@ -55,12 +56,29 @@ def _meta(page: str, prop: str) -> str:
 
 
 def parse_spotify(page: str) -> tuple[str, str]:
-    """og:title = song; og:description = 'Artist · Song · Song · 2024'."""
+    """og:title = song; og:description = 'Artist · Album · Song · 2024'.
+    Falls back to <title>Song - song and lyrics by Artist | Spotify</title>, then to the
+    JSON in the embed page ("name" + "artists"), since Spotify serves different pages
+    to different clients."""
     title = _meta(page, "og:title")
     desc = _meta(page, "og:description")
     artist = desc.split("·")[0].strip() if "·" in desc else ""
     if not artist:
         artist = _meta(page, "music:musician_description")
+    if not title or not artist:
+        m = re.search(r"<title>(.+?)\s+-\s+song(?:\s+and\s+lyrics)?\s+by\s+(.+?)\s*\|\s*Spotify</title>", page, re.S)
+        if m:
+            title = title or html.unescape(m.group(1)).strip()
+            artist = artist or html.unescape(m.group(2)).strip()
+    if not title:
+        m = re.search(r'"type"\s*:\s*"track"[^{}]*?"name"\s*:\s*"([^"]+)"', page) or \
+            re.search(r'"name"\s*:\s*"([^"]+)"[^{}]*?"type"\s*:\s*"track"', page)
+        if m:
+            title = json.loads(f'"{m.group(1)}"')
+    if not artist:
+        m = re.search(r'"artists"\s*:\s*\[\s*\{[^{}]*?"name"\s*:\s*"([^"]+)"', page)
+        if m:
+            artist = json.loads(f'"{m.group(1)}"')
     return title, artist
 
 
@@ -84,6 +102,14 @@ def _fetch(url: str) -> str:
 def lookup_track(url: str, service: str) -> tuple[str, str]:
     page = _fetch(url)
     title, artist = (parse_spotify if service == "spotify" else parse_apple)(page)
+    if service == "spotify" and not (title and artist):
+        m = re.search(r"/track/([A-Za-z0-9]+)", url)
+        if m:  # the embed page carries the track JSON even when the main page is a bare app shell
+            try:
+                t2, a2 = parse_spotify(_fetch(f"https://open.spotify.com/embed/track/{m.group(1)}"))
+                title, artist = title or t2, artist or a2
+            except Exception:
+                pass
     if not title:
         raise LinkError("Couldn't read the track name from that link (is it a single track, not a playlist?)")
     return title, artist

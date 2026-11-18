@@ -534,3 +534,11 @@ def test_volume_disables_crc_checksums():
     v = cloud.Volume({**SETTINGS})
     assert v.s3.meta.config.response_checksum_validation == "when_required"
     assert v.s3.meta.config.request_checksum_calculation == "when_required"
+
+
+def test_spotify_title_tag_and_embed_fallbacks():
+    from glore_engine import linkimport
+    page = "<html><title>Mama, I&#x27;m Sorry - song and lyrics by Lil Uzi Vert | Spotify</title></html>"
+    assert linkimport.parse_spotify(page) == ("Mama, I'm Sorry", "Lil Uzi Vert")
+    embed = '{"type":"track","name":"Mama, I\\u2019m Sorry","uri":"x","artists":[{"name":"Lil Uzi Vert","uri":"y"}]}'
+    assert linkimport.parse_spotify(embed) == ("Mama, I’m Sorry", "Lil Uzi Vert")

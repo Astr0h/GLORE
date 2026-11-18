@@ -53,6 +53,37 @@ def ensure_ace(report: Report, variant: str = "turbo") -> glore_pod.Ace:
     return ace
 
 
+def run_generator(ace, job: dict, tmp: Path, log_path: Path, report: Report, lo: float = 0.05, span: float = 0.9) -> dict:
+    """Run pod/glore_generate.py in ACE-Step's venv; returns its GLORE_RESULT."""
+    (tmp / "job.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
+    cmd = ace.py(str(SCRIPT), str(tmp / "job.json"))
+    result, error = None, None
+    win = os.name == "nt"
+    with open(log_path, "w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(cmd) + "\n")
+        proc = subprocess.Popen(cmd, cwd=str(ace.dir), env=ace.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                creationflags=0x08000000 if win else 0)
+        for line in proc.stdout:
+            log.write(line)
+            log.flush()
+            line = line.rstrip("\n")
+            if line.startswith("GLORE_PROGRESS "):
+                _, frac, msg = line.split(" ", 2)
+                report(lo + span * float(frac), msg)
+            elif line.startswith("GLORE_RESULT "):
+                result = json.loads(line[len("GLORE_RESULT "):])
+            elif line.startswith("GLORE_ERROR "):
+                error = json.loads(line[len("GLORE_ERROR "):]).get("error")
+        proc.wait()
+    if proc.returncode or not result:
+        err = error or "Generation failed"
+        if "out of memory" in log_path.read_text(encoding="utf-8", errors="replace").lower():
+            err = "Ran out of GPU memory. Try a shorter length or one take at a time."
+        raise GenerateError(f"{err} (log: {log_path})")
+    return result
+
+
 def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_run: str | None = None,
              use_lora: bool = True, caption: str | None = None, bpm: float | None = None, key: str | None = None,
              duration: float = 60.0, seed: int = -1, count: int = 1, scale: float = 1.0,
@@ -80,32 +111,7 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
            "steps": inference.get("steps"), "shift": inference.get("shift"), "offload": offload}
     (tmp / "job.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
 
-    cmd = ace.py(str(SCRIPT), str(tmp / "job.json"))
-    log_path = gen_dir / f"{gid}.log"
-    result, error = None, None
-    win = os.name == "nt"
-    with open(log_path, "w", encoding="utf-8") as log:
-        log.write("$ " + " ".join(cmd) + "\n")
-        proc = subprocess.Popen(cmd, cwd=str(ace.dir), env=ace.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                creationflags=0x08000000 if win else 0)
-        for line in proc.stdout:
-            log.write(line)
-            log.flush()
-            line = line.rstrip("\n")
-            if line.startswith("GLORE_PROGRESS "):
-                _, frac, msg = line.split(" ", 2)
-                report(0.05 + 0.9 * float(frac), msg)
-            elif line.startswith("GLORE_RESULT "):
-                result = json.loads(line[len("GLORE_RESULT "):])
-            elif line.startswith("GLORE_ERROR "):
-                error = json.loads(line[len("GLORE_ERROR "):]).get("error")
-        proc.wait()
-    if proc.returncode or not result:
-        err = error or "Generation failed"
-        if "out of memory" in (log_path.read_text(encoding="utf-8", errors="replace")).lower():
-            err = "Ran out of GPU memory. Try a shorter length or one take at a time."
-        raise GenerateError(f"{err} (log: {log_path})")
+    result = run_generator(ace, job, tmp, gen_dir / f"{gid}.log", report)
 
     report(0.97, "Adding to the project")
     label = PACKS[pack]["label"] if lora else "No LoRA"
@@ -122,3 +128,81 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
     shutil.rmtree(tmp, ignore_errors=True)
     return {"takes": takes, "caption": result.get("caption"), "seconds": result.get("seconds"),
             "peak_vram_gb": result.get("peak_vram_gb"), "lora": (lora or {}).get("run_id")}
+
+
+# ---------------------------------------------------------------- around a vocal
+
+def _mp3(wav: Path, mp3: Path) -> None:
+    import imageio_ffmpeg
+    mp3.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-v", "error", "-i", str(wav), "-c:a", "libmp3lame",
+                    "-b:a", "256k", str(mp3)], check=True, creationflags=0x08000000 if os.name == "nt" else 0)
+
+
+def generate_around_vocal(store: ProjectStore, report: Report, *, source_id: str | None = None,
+                          caption: str = "soft house", tracks: list[str] | None = None, seed: int = -1,
+                          steps: int = 50, guidance: float = 7.0, beat_gain_db: float = -3.0,
+                          export_dir: str | None = None) -> dict:
+    """ACE-Step 'complete' (base model): write drums/bass/keys/synths around your vocal,
+    then strip whatever vocal the model echoed back and lay your clean vocal on top."""
+    import numpy as np
+    from . import audio_io, separation
+
+    p = store.project
+    if source_id:
+        vocal = store.source(source_id)
+    else:
+        lock = p.vocal_lock or {}
+        vocal = store.source(lock["source_id"]) if lock.get("source_id") else None
+        vocal = vocal or next((s for s in reversed(p.sources) if s.kind == "vocal"), None)
+    if not vocal:
+        raise GenerateError("Add or extract a vocal first")
+    vocal_path = store.sources_dir / vocal.file
+    a = vocal.effective()
+
+    report(0.01, "Checking ACE-Step (base model)")
+    ace = ensure_ace(lambda pr, m: report(0.02, m), "base")
+
+    gid = new_id()
+    gen_dir = store.root / "generated"
+    tmp = gen_dir / f"_{gid}"
+    tmp.mkdir(parents=True, exist_ok=True)
+    job = {"mode": "complete", "ace_dir": str(ace.dir), "out_dir": str(tmp), "variant": "base",
+           "src_audio": str(vocal_path), "caption": caption, "tracks": tracks, "lora": None,
+           "bpm": a.get("bpm"), "key": a.get("key_name") or a.get("key"), "duration": vocal.duration or None,
+           "seed": seed, "count": 1, "steps": steps, "shift": 1.0, "guidance": guidance, "offload": True}
+    result = run_generator(ace, job, tmp, gen_dir / f"{gid}.log", report, 0.04, 0.66)
+    full = Path(result["files"][0]["path"])
+
+    report(0.72, "Separating the new beat from the model's copy of the vocal")
+    stems = separation.separate(full, tmp / "stems", progress=lambda pr, m: report(0.72 + 0.18 * pr, m))
+    sr = audio_io.PROJECT_SR
+    beat = sum(audio_io.load_stereo(stems[n], sr) for n in stems if n != "vocals")
+    voc = audio_io.load_stereo(vocal_path, sr)
+    n = max(len(beat), len(voc))
+    pad = lambda x: np.pad(x, ((0, n - len(x)), (0, 0)))
+    beat, voc = pad(beat), pad(voc)
+    mix = voc + beat * (10 ** (beat_gain_db / 20))
+    mix *= 0.89 / max(1e-6, float(np.max(np.abs(mix))))   # peak at about -1 dBFS
+
+    report(0.93, "Saving")
+    name = f"{vocal.name.replace(' (vocal)', '')}"
+    files = {}
+    for kind, audio in (("beat", beat), ("mix", mix)):
+        rel = f"generated/{gid}-{kind}.wav"
+        audio_io.save_wav(store.root / rel, audio, sr)
+        layer = Layer(id=f"gen-{gid}-{kind}", name=f"{'Beat' if kind == 'beat' else 'Mix'} · {caption} · {name}",
+                      file=rel, role="generated")
+        store.upsert_layer(layer)
+        files[kind] = rel
+    store.save()
+    out = {"files": files, "seed": result["files"][0].get("seed"), "seconds": result.get("seconds"),
+           "peak_vram_gb": result.get("peak_vram_gb"), "vocal": vocal.name}
+    if export_dir:
+        safe = "".join(c for c in f"{name} - GLORE {caption}" if c not in '<>:"/\\|?*').strip()
+        mp3 = Path(export_dir) / f"{safe}.mp3"
+        _mp3(store.root / files["mix"], mp3)
+        out["mp3"] = str(mp3)
+    shutil.rmtree(tmp, ignore_errors=True)
+    report(1.0, "Done")
+    return out

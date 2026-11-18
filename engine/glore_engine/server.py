@@ -114,8 +114,9 @@ class VocalOverBeatBody(BaseModel):
     vocal_source: str
     grid_source: str | None = None
     beat_bpm: float | None = None
-    vocal_gain_db: float = 0.0
-    beat_gain_db: float = -4.0
+    vocal_gain_db: float = -2.0
+    beat_gain_db: float = 0.0
+    arrange: bool = True          # replay the original song's breakdowns / drops on the beat
     export_dir: str | None = None
     name: str | None = None
 

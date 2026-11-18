@@ -136,7 +136,7 @@ def test_vocal_over_beat_end_to_end(store, tmp_path, monkeypatch):
                             derived_from="song", analysis={"bpm": 128.5}))
     monkeypatch.setattr(gen, "_mp3", lambda wav, mp3: (mp3.parent.mkdir(parents=True, exist_ok=True), mp3.write_bytes(b"x")))
     res = gen.mix_vocal_over_beat(store, lambda p, m: None, beat_layer="gen-b", vocal_source="v",
-                                  export_dir=str(tmp_path / "o"))
+                                  arrange=False, export_dir=str(tmp_path / "o"))
     assert abs(res["beat_bpm"] - 128) < 3 and res["song_bpm"] == 128.5
     assert 0 <= res["offset_s"] < 240 / res["beat_bpm"]
     assert (store.root / res["file"]).exists() and res["mp3"].endswith("Song (GLORE).mp3")

@@ -227,12 +227,45 @@ def bar_offset(song_downbeats: list[float], beat_downbeats: list[float], factor:
     return float((beat_downbeats[0] - d0) % bar)
 
 
+def _stems_of(store: ProjectStore, report: Report, owner_id: str, path: Path, lo: float, span: float) -> dict:
+    """The 4 Demucs stems of a file, separated once and kept in stems/<owner_id>/."""
+    from . import audio_io, separation
+
+    d = store.stems_dir / owner_id
+    names = ("drums", "bass", "other", "vocals")
+    found = {n: next(iter(d.glob(f"*_{n}.wav")), None) if d.exists() else None for n in names}
+    if not all(found.values()):
+        found = separation.separate(path, d, progress=lambda p, m: report(lo + p * span, m))
+    return {n: audio_io.load_stereo(found[n], audio_io.PROJECT_SR) for n in names}
+
+
+def _arranged_beat(store, report, layer, grid, ga, song_bpm, factor, offset, sr):
+    """Read the original song's arrangement and replay it on the beat's stems."""
+    from . import arrange
+
+    report(0.45, "Reading the original song's arrangement")
+    song = _stems_of(store, report, grid.id, store.sources_dir / grid.file, 0.45, 0.15)
+    d0, song_bar = float(ga["downbeats"][0]), 240.0 / song_bpm
+    lv = {k: arrange.bar_levels(song[k], sr, d0, song_bar) for k in ("drums", "bass", "other")}
+    bars = arrange.section_map(lv["drums"], lv["bass"], lv["other"])
+    report(0.6, "Splitting the beat into stems")
+    beat_stems = _stems_of(store, report, layer.id, store.root / layer.file, 0.6, 0.25)
+    report(0.86, "Arranging the beat around the vocal")
+    starts = [(d0 + i * song_bar) / factor + offset for i in range(len(bars))]
+    beat = arrange.arrange_stems(beat_stems, sr, bars, starts)
+    secs = arrange.sections(bars)
+    for s in secs:
+        s["start_s"] = round(starts[s["start_bar"]], 2)
+    return beat, secs
+
+
 def mix_vocal_over_beat(store: ProjectStore, report: Report, *, beat_layer: str, vocal_source: str,
                         grid_source: str | None = None, beat_bpm: float | None = None,
-                        vocal_gain_db: float = 0.0, beat_gain_db: float = -4.0,
+                        vocal_gain_db: float = -2.0, beat_gain_db: float = 0.0, arrange: bool = True,
                         export_dir: str | None = None, name: str | None = None) -> dict:
     """Lay a vocal on a generated beat: match tempo (Rubber Band), line up bar lines, mix.
-    grid_source = the full song the vocal came from (its drums give far better downbeats)."""
+    grid_source = the full song the vocal came from (its drums give far better downbeats).
+    arrange = replay the original song's arrangement (breakdowns, drum cuts, drops) on the beat."""
     import numpy as np
     from . import analysis, audio_io, vocal_lock
 
@@ -270,7 +303,11 @@ def mix_vocal_over_beat(store: ProjectStore, report: Report, *, beat_layer: str,
     bar = 240.0 / target
     offset = bar_offset(ga.get("downbeats") or [], beat_db, factor, bar)
 
-    report(0.7, "Mixing")
+    sections = None
+    if arrange and ga.get("downbeats"):
+        beat, sections = _arranged_beat(store, report, layer, grid, ga, song_bpm, factor, offset, sr)
+
+    report(0.9, "Mixing")
     shift = int(round(offset * sr))
     voc = np.pad(voc, ((0, 0), (shift, 0)))
     n = max(voc.shape[1], beat.shape[1])
@@ -288,6 +325,8 @@ def mix_vocal_over_beat(store: ProjectStore, report: Report, *, beat_layer: str,
     store.save()
     out = {"file": rel, "beat_bpm": round(target, 2), "song_bpm": song_bpm, "stretch": round(factor, 5),
            "offset_s": round(offset, 3), "duration": round(mix.shape[1] / sr, 1)}
+    if sections is not None:
+        out["sections"] = sections
     if export_dir:
         safe = "".join(c for c in f"{title} (GLORE)" if c not in '<>:"/\\|?*').strip()
         mp3 = Path(export_dir) / f"{safe}.mp3"

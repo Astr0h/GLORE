@@ -38,7 +38,7 @@ Then double-click `Setup GLORE.bat` again. It skips what's already installed, so
 - **LoRA Packs page** (bottom of the sidebar): track counts per pack, plus *Prepare*, which strips vocals ready for training.
 
 ## New in session 3: cloud LoRA training
-*Train LoRA* now works. It uploads a pack's prepared tracks to RunPod, trains an ACE-Step 1.5 LoRA on a rented H100, and downloads the result. The GPU switches itself off when it's done.
+*Train LoRA* now works. It uploads a pack's prepared tracks to RunPod, trains an ACE-Step 1.5 LoRA on a rented GPU (an A100 80GB by default, about $2.19/h), and downloads the result. The GPU switches itself off when it's done.
 
 **One-time setup (about 10 minutes):**
 1. Make a RunPod account at runpod.io and add some credit ($10 is plenty to start).

@@ -613,7 +613,7 @@ function cloudSettingsForm() {
       field('RunPod API key', 'RunPod console → Settings → API Keys. Starts and stops the GPU.', settingInput('api_key', { type: 'password', placeholder: 'rpa_…' })),
       field('S3 access key', 'Credentials → S3 API Keys: your user id (user_…), shown with the key. Lets GLORE upload without a running GPU.', settingInput('s3_access_key', { placeholder: 'user_…' })),
       field('S3 secret', 'The secret shown once when you create the S3 API key.', settingInput('s3_secret', { type: 'password' })),
-      field('Datacenter', 'Must support RunPod\'s S3 API. Auto picks the one with the most H100s free, EU first.', settingSelect('datacenter', dcs)),
+      field('Datacenter', 'Must support RunPod\'s S3 API. Auto picks one that has the GPU below in stock and can hold a network volume, EU first.', settingSelect('datacenter', dcs)),
       field('Network volume', 'Where training audio, models and LoRAs live between runs. Paste an existing volume id, or create one.',
         el('div', { class: 'row tight' }, settingInput('volume_id', { placeholder: 'none yet' }),
           s.volume_id ? null : el('button', { class: 'btn small ghost', disabled: !!state.cloud.job, onclick: createVolume, 'data-tip': 'Creates it in the datacenter above. Storage is billed monthly, about $0.07 per GB.' }, 'Create'))),
@@ -621,7 +621,7 @@ function cloudSettingsForm() {
       field('Idle stop · min', 'The GPU shuts itself down after this long with nothing to do.', settingInput('idle_minutes', { type: 'number', min: 1, max: 120 })),
       field('Hard cap · h', 'No GPU session ever runs longer than this, whatever happens. A run cut short resumes from its last checkpoint.', settingInput('hard_cap_hours', { type: 'number', min: 0.5, max: 48, step: 0.5 })),
       field('Monthly limit · $', 'GLORE won\'t start a run that could go over this, and stops the GPU if it\'s reached. 0 = no limit.', settingInput('monthly_limit', { type: 'number', min: 0, step: 1 })),
-      field('GPU', 'Picked by name: the cheapest one in stock whose name contains this.', settingInput('gpu', { placeholder: 'H100' })),
+      field('GPU', 'Picked by name: the cheapest one in stock whose name contains this.', settingInput('gpu', { placeholder: 'A100' })),
       field('Base model', 'ACE-Step 1.5 standard (2B). LoRAs only work on the model they were trained on: turbo is what runs on your 8 GB card.',
         settingSelect('variant', [['turbo', 'Standard · turbo'], ['base', 'Standard · base'], ['sft', 'Standard · sft']]))),
     el('div', { class: 'row' }, el('button', { class: 'btn small', onclick: save }, 'Save')));
@@ -673,7 +673,7 @@ function trainRow(p, busy) {
   const o = state.trainOpts[p.id] = state.trainOpts[p.id] || {};
   const ready = state.cloud.settings && !state.cloud.settings.missing.length;
   const enough = p.prepared >= p.min_tracks;
-  const tip = !ready ? 'Set up the cloud GPU above first' : !enough ? `Prepare at least ${p.min_tracks} tracks first` : 'Upload the prepared tracks and train on a cloud H100';
+  const tip = !ready ? 'Set up the cloud GPU above first' : !enough ? `Prepare at least ${p.min_tracks} tracks first` : 'Upload the prepared tracks and train on the cloud GPU';
   return el('div', { class: 'row train-row' },
     el('span', { class: 'label', 'data-tip': `Passes over the whole set. Empty = picked from the track count (${defaultEpochs(p.prepared)} for ${p.prepared}).` }, 'epochs'),
     el('input', { class: 'num sm', type: 'number', min: 1, max: 2000, placeholder: String(defaultEpochs(p.prepared)), value: o.epochs || '', oninput: (e) => { o.epochs = e.target.value; } }),

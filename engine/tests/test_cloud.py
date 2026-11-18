@@ -101,13 +101,23 @@ class FakeAce(glore_pod.Ace):
 
 
 class FakeRunPod:
+    # shapes copied from a real GET /v2/catalog/gpus?include=AVAILABILITY&product=POD (18 Nov 2026)
     GPUS = [
-        {"id": "NVIDIA H100 80GB HBM3", "name": "H100 SXM", "secure": True, "price": {"secure": 2.69},
-         "availability": [{"dataCenter": "EU-RO-1", "availability": "HIGH"}]},
-        {"id": "NVIDIA H100 PCIe", "name": "H100 PCIe", "secure": True, "price": {"secure": 1.99},
-         "availability": [{"dataCenter": "EU-RO-1", "availability": "NONE"}]},
-        {"id": "NVIDIA RTX A4000", "name": "A4000", "secure": True, "price": {"secure": 0.17},
-         "availability": [{"dataCenter": "EU-RO-1", "availability": "LOW"}]},
+        {"availability": "LOW", "id": "NVIDIA H100 80GB HBM3", "name": "H100 SXM", "secure": True,
+         "price": {"community": 2.69, "secure": 4.39, "serverless": 5.89},
+         "dataCenters": [{"availability": "LOW", "id": "US-GA-2", "name": "US-GA-2"},
+                         {"availability": "LOW", "id": "EU-RO-1", "name": "EU-RO-1"}]},
+        {"availability": "NONE", "id": "NVIDIA H100 PCIe", "name": "H100 PCIe", "secure": True,
+         "price": {"community": 1.99, "secure": 2.89, "serverless": 5.89}},
+        {"availability": "LOW", "id": "NVIDIA A100-SXM4-80GB", "name": "A100 SXM", "secure": True,
+         "price": {"community": 1.39, "secure": 2.19, "serverless": 2.99},
+         "dataCenters": [{"availability": "LOW", "id": "EUR-IS-1", "name": "EUR-IS-1"},
+                         {"availability": "LOW", "id": "EU-RO-1", "name": "EU-RO-1"}]},
+        {"availability": "NONE", "id": "NVIDIA A100-SXM4-40GB", "name": "A100 SXM 40GB", "secure": False,
+         "price": {"community": 1, "secure": 0}},
+        {"availability": "MEDIUM", "id": "NVIDIA RTX A4000", "name": "A4000", "secure": True,
+         "price": {"community": 0.09, "secure": 0.17},
+         "dataCenters": [{"availability": "MEDIUM", "id": "EU-RO-1", "name": "EU-RO-1"}]},
     ]
 
     def __init__(self, vol: FakeVolume, ace: FakeAce):
@@ -118,8 +128,14 @@ class FakeRunPod:
         return self.GPUS
 
     def datacenters(self):
-        return [{"id": "EU-RO-1", "gpuAvailability": [{"id": "NVIDIA H100 80GB HBM3", "availability": "HIGH"}]},
-                {"id": "CA-MTL-1", "gpuAvailability": [{"id": "NVIDIA H100 80GB HBM3", "availability": "HIGH"}]}]
+        return [{"id": "CA-MTL-1", "networkVolumeTypes": ["STANDARD"],     # no S3 API
+                 "gpuAvailability": [{"id": "NVIDIA A100-SXM4-80GB", "name": "A100 SXM", "availability": "HIGH"}]},
+                {"id": "US-KS-2", "networkVolumeTypes": [],                # can't hold a volume
+                 "gpuAvailability": [{"id": "NVIDIA A100-SXM4-80GB", "name": "A100 SXM", "availability": "HIGH"}]},
+                {"id": "EU-RO-1", "networkVolumeTypes": ["STANDARD"],
+                 "gpuAvailability": [{"id": "NVIDIA A100-SXM4-80GB", "name": "A100 SXM", "availability": "LOW"}]},
+                {"id": "EUR-NO-1", "networkVolumeTypes": ["STANDARD"],
+                 "gpuAvailability": [{"id": "NVIDIA RTX 4090", "name": "RTX 4090", "availability": "LOW"}]}]
 
     def create_volume(self, name, size, dc):
         return {"id": "vol123", "name": name, "size": size, "dataCenter": dc}
@@ -155,7 +171,7 @@ SETTINGS = {"api_key": "rpa_secretkey1234", "s3_access_key": "user_abc", "s3_sec
 @pytest.fixture
 def cl(tmp_path, monkeypatch):
     monkeypatch.setattr(training, "POLL_S", 0.05)
-    cloud.save_settings(SETTINGS)
+    cloud.save_settings({**SETTINGS, "gpu": "H100"})
     vol = FakeVolume(tmp_path / "volume")
     ace = FakeAce(tmp_path)
     rp = FakeRunPod(vol, ace)
@@ -207,16 +223,20 @@ def test_settings_validation():
 
 # ---------------------------------------------------------------- choosing GPUs / datacenters
 
-def test_pick_gpu_prefers_in_stock_h100():
-    gid, price = cloud.pick_gpu(FakeRunPod.GPUS, "EU-RO-1", "H100")
-    assert gid == "NVIDIA H100 80GB HBM3" and price == 2.69  # the cheaper PCIe one is out of stock
+def test_pick_gpu_uses_per_datacenter_stock():
+    assert cloud.pick_gpu(FakeRunPod.GPUS, "EU-RO-1", "H100") == ("NVIDIA H100 80GB HBM3", 4.39)  # PCIe: none
+    assert cloud.pick_gpu(FakeRunPod.GPUS, "EUR-IS-1", "A100") == ("NVIDIA A100-SXM4-80GB", 2.19)  # 40GB: no secure
     with pytest.raises(CloudError, match="No H100 free"):
         cloud.pick_gpu(FakeRunPod.GPUS, "EUR-IS-1", "H100")
     assert cloud.pick_cheapest(FakeRunPod.GPUS, "EU-RO-1")[0] == "NVIDIA RTX A4000"
+    assert not cloud.available_in({"availability": "LOW"}, "EU-RO-1")  # no datacenter list -> unknown, skip
 
 
-def test_choose_datacenter_needs_s3(cl):
-    assert cloud.choose_datacenter(cl["rp"]) == "EU-RO-1"  # CA-MTL-1 has stock but no S3 API
+def test_choose_datacenter_needs_s3_and_volumes(cl):
+    # CA-MTL-1 has no S3 API, US-KS-2 can't hold a volume
+    assert cloud.choose_datacenter(cl["rp"], "A100") == "EU-RO-1"
+    with pytest.raises(CloudError, match="No datacenter"):
+        cloud.choose_datacenter(cl["rp"], "H100")
 
 
 def test_pod_body():
@@ -393,7 +413,7 @@ def test_connection_test(cl):
 
 
 def test_setup_volume(cl):
-    cloud.save_settings({"volume_id": "", "datacenter": ""})
+    cloud.save_settings({"volume_id": "", "datacenter": "", "gpu": "A100"})
     res = training.setup_volume(cl["mgr"], collect([]))
     assert res == {"volume_id": "vol123", "datacenter": "EU-RO-1"}
     assert cloud.load_settings()["volume_id"] == "vol123"

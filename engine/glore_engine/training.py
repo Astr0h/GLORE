@@ -4,7 +4,7 @@ Cloud run, start to finish:
   1. Prepared tracks (_train.wav) -> 24-bit FLAC (lossless, about half the size).
   2. Upload to the network volume over S3. Files already there with the same size
      are skipped, so an interrupted upload picks up where it stopped.
-  3. Queue a job file, start an H100 pod (or reuse one that's idling).
+  3. Queue a job file, start a GPU pod (or reuse one that's idling).
   4. Follow status.json on the volume: epochs, loss, ETA, cost so far.
   5. Download the LoRA to %APPDATA%/GLORE/loras/<pack>/<run>/.
 
@@ -369,7 +369,7 @@ def setup_volume(mgr: CloudManager, report: Report) -> dict:
     rp = mgr.rp()
     dc = s.get("datacenter") or ""
     if not dc:
-        report(0.3, f"Finding a datacenter with {s['gpu']}s and S3 access")
+        report(0.3, f"Finding a datacenter with a free {s['gpu']} and S3 storage")
         dc = cloud.choose_datacenter(rp, s["gpu"])
     report(0.7, f"Creating a {s['volume_gb']} GB network volume in {dc}")
     v = rp.create_volume("glore", int(s["volume_gb"]), dc)

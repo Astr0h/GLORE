@@ -44,7 +44,7 @@ DEFAULTS = {
     "idle_minutes": 10,
     "hard_cap_hours": 4.0,
     "monthly_limit": 20.0,     # USD; 0 = no limit
-    "gpu": "H100",
+    "gpu": "A100",             # cheapest in-stock GPU whose name contains this (A100 80GB: ~$2.19/h)
     "variant": "turbo",        # ACE-Step 1.5 standard (2B) DiT variant the LoRA is trained on
     "image": DEFAULT_IMAGE,
 }
@@ -173,7 +173,8 @@ class RunPod:
 
     # catalog
     def gpus(self, include_availability: bool = True) -> list[dict]:
-        q = {"include": "AVAILABILITY"} if include_availability else None
+        # availability needs a product context; per-datacenter stock comes back as g["dataCenters"]
+        q = {"include": "AVAILABILITY", "product": "POD"} if include_availability else None
         r = self._req("GET", "/catalog/gpus", query=q)
         return r.get("gpus", r if isinstance(r, list) else [])
 
@@ -183,7 +184,8 @@ class RunPod:
 
     # storage
     def create_volume(self, name: str, size_gb: int, dc: str) -> dict:
-        return self._req("POST", "/network-volumes", {"name": name, "size": int(size_gb), "dataCenter": dc})
+        return self._req("POST", "/network-volumes",
+                         {"name": name, "size": int(size_gb), "dataCenter": dc, "type": "STANDARD"})
 
     def get_volume(self, vid: str) -> dict:
         return self._req("GET", f"/network-volumes/{vid}")
@@ -232,18 +234,20 @@ def gpu_price(g: dict) -> float | None:
 
 
 def available_in(g: dict, dc: str) -> bool:
-    """availability: [{dataCenter / dataCenterId / id, availability|stockStatus}, ...] - treat NONE as out."""
+    """Real v2 shape (product=POD): g["dataCenters"] = [{"id": "EUR-IS-1", "availability": "LOW"}, ...]
+    for GPUs in stock somewhere; g["availability"] is one overall level ("NONE" = nowhere)."""
+    dcs = g.get("dataCenters")
+    if isinstance(dcs, list):
+        return any(isinstance(a, dict) and a.get("id") == dc
+                   and str(a.get("availability", "")).upper() not in ("NONE", "") for a in dcs)
     av = g.get("availability")
     if av is None:
         return True  # not reported: let RunPod decide
-    if isinstance(av, dict):
-        av = av.get("dataCenters") or av.get("results") or [av]
+    if isinstance(av, str):
+        return False  # only an overall level, no datacenter list -> not in stock anywhere we can tell
     for a in av if isinstance(av, list) else []:
-        if not isinstance(a, dict):
-            continue
-        where = a.get("dataCenter") or a.get("dataCenterId") or a.get("id")
-        level = str(a.get("availability") or a.get("stockStatus") or "").upper()
-        if where == dc and level not in ("NONE", ""):
+        if isinstance(a, dict) and (a.get("dataCenter") or a.get("id")) == dc \
+                and str(a.get("availability", "")).upper() not in ("NONE", ""):
             return True
     return False
 
@@ -251,7 +255,7 @@ def available_in(g: dict, dc: str) -> bool:
 def pick_gpu(gpus: list[dict], dc: str, want: str = "H100") -> tuple[str, float]:
     """Cheapest GPU whose id/name contains `want` and that's in stock in the volume's datacenter."""
     cands = [g for g in gpus if want.lower() in (str(g.get("id", "")) + " " + str(g.get("name", ""))).lower()
-             and g.get("secure", True) is not False and gpu_price(g) is not None]
+             and g.get("secure", True) is not False and gpu_price(g)]
     if not cands:
         raise CloudError(f"RunPod doesn't list a {want} right now")
     stocked = [g for g in cands if available_in(g, dc)]
@@ -262,7 +266,7 @@ def pick_gpu(gpus: list[dict], dc: str, want: str = "H100") -> tuple[str, float]
 
 
 def pick_cheapest(gpus: list[dict], dc: str) -> tuple[str, float]:
-    stocked = [g for g in gpus if gpu_price(g) is not None and g.get("secure", True) is not False and available_in(g, dc)]
+    stocked = [g for g in gpus if gpu_price(g) and g.get("secure", True) is not False and available_in(g, dc)]
     if not stocked:
         raise CloudError(f"No GPUs free in {dc} right now. Try again in a few minutes.")
     g = min(stocked, key=gpu_price)
@@ -270,28 +274,24 @@ def pick_cheapest(gpus: list[dict], dc: str) -> tuple[str, float]:
 
 
 def choose_datacenter(rp: RunPod, want: str = "H100") -> str:
-    """S3-capable datacenter with the best stock of `want`, EU first."""
-    try:
-        dcs = rp.datacenters()
-    except CloudError:
-        dcs = []
+    """S3-capable datacenter that can hold a standard network volume and has `want` in stock, EU first."""
+    dcs = rp.datacenters()
     rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
     best, best_score = None, 0
     for dc in dcs:
-        if dc.get("id") not in S3_DATACENTERS:
+        if dc.get("id") not in S3_DATACENTERS or "STANDARD" not in (dc.get("networkVolumeTypes") or []):
             continue
         score = max([rank.get(str(a.get("availability", "")).upper(), 0) for a in dc.get("gpuAvailability") or []
-                     if want.lower() in str(a.get("id", "")).lower()] or [0])
+                     if want.lower() in (str(a.get("id", "")) + " " + str(a.get("name", ""))).lower()] or [0])
+        if not score:
+            continue
         score = score * 100 - S3_DATACENTERS.index(dc["id"])
         if score > best_score:
             best, best_score = dc["id"], score
-    if best:
-        return best
-    gpus = rp.gpus()
-    for dc in S3_DATACENTERS:
-        if any(want.lower() in str(g.get("id", "")).lower() and available_in(g, dc) for g in gpus):
-            return dc
-    return S3_DATACENTERS[0]
+    if not best:
+        raise CloudError(f"No datacenter with RunPod's S3 API and standard storage has a {want} free right now. "
+                         "Try again later, or set GPU to another card (e.g. A100).")
+    return best
 
 
 def pod_body(s: dict, gpu_id: str, name: str, env: dict) -> dict:

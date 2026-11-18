@@ -214,3 +214,84 @@ def generate_around_vocal(store: ProjectStore, report: Report, *, source_id: str
     shutil.rmtree(tmp, ignore_errors=True)
     report(1.0, "Done")
     return out
+
+
+# ---------------------------------------------------------------- vocal over a generated beat
+
+def bar_offset(song_downbeats: list[float], beat_downbeats: list[float], factor: float, bar: float) -> float:
+    """Seconds to delay the (stretched) vocal so the song's bar lines land on the beat's.
+    `factor` = target_bpm / source_bpm (times in the song shrink by 1/factor)."""
+    if not song_downbeats or not beat_downbeats:
+        return 0.0
+    d0 = song_downbeats[0] / factor
+    return float((beat_downbeats[0] - d0) % bar)
+
+
+def mix_vocal_over_beat(store: ProjectStore, report: Report, *, beat_layer: str, vocal_source: str,
+                        grid_source: str | None = None, beat_bpm: float | None = None,
+                        vocal_gain_db: float = 0.0, beat_gain_db: float = -4.0,
+                        export_dir: str | None = None, name: str | None = None) -> dict:
+    """Lay a vocal on a generated beat: match tempo (Rubber Band), line up bar lines, mix.
+    grid_source = the full song the vocal came from (its drums give far better downbeats)."""
+    import numpy as np
+    from . import analysis, audio_io, vocal_lock
+
+    p = store.project
+    layer = next((l for l in p.layers if l.id == beat_layer), None)
+    if not layer:
+        raise GenerateError("That beat isn't in the project")
+    vocal = store.source(vocal_source)
+    grid = store.source(grid_source) if grid_source else (
+        store.source(vocal.derived_from) if vocal.derived_from else vocal)
+    ga = grid.effective()
+    song_bpm = float(ga.get("bpm") or vocal.effective().get("bpm") or 0)
+    if not song_bpm:
+        raise GenerateError("Analyse the vocal first (no BPM yet)")
+    sr = audio_io.PROJECT_SR
+
+    report(0.1, "Reading the beat's tempo and bar lines")
+    beat = audio_io.load_stereo(store.root / layer.file, sr)
+    mono = audio_io.load_mono(store.root / layer.file)
+    found_bpm, _, _, beats = analysis.estimate_tempo(mono, 22050)
+    target = float(beat_bpm or found_bpm)
+    if abs(target * 2 - song_bpm) < abs(target - song_bpm):
+        target *= 2
+    elif abs(target / 2 - song_bpm) < abs(target - song_bpm):
+        target /= 2
+    beat_db = analysis.estimate_downbeats(mono, 22050, beats)
+
+    report(0.35, f"Fitting the vocal to {target:.1f} BPM")
+    gid = new_id()
+    tmp = store.root / "generated" / f"_{gid}-vocal.wav"
+    vocal_lock.lock_vocal(store.sources_dir / vocal.file, tmp, song_bpm, target)
+    voc = audio_io.load_stereo(tmp, sr)
+    tmp.unlink(missing_ok=True)
+    factor = target / song_bpm
+    bar = 240.0 / target
+    offset = bar_offset(ga.get("downbeats") or [], beat_db, factor, bar)
+
+    report(0.7, "Mixing")
+    shift = int(round(offset * sr))
+    voc = np.pad(voc, ((0, 0), (shift, 0)))
+    n = max(voc.shape[1], beat.shape[1])
+    pad = lambda x: np.pad(x, ((0, 0), (0, n - x.shape[1])))
+    mix = pad(voc) * 10 ** (vocal_gain_db / 20) + pad(beat) * 10 ** (beat_gain_db / 20)
+    mix = mix[:, : min(n, voc.shape[1] + int(2 * bar * sr))]          # end a couple of bars after the vocal
+    fade = int(min(2.0, bar) * sr)
+    mix[:, -fade:] *= np.linspace(1, 0, fade)
+    mix *= 0.89 / max(1e-6, float(np.max(np.abs(mix))))
+
+    rel = f"generated/{gid}-song.wav"
+    audio_io.save_wav(store.root / rel, mix, sr)
+    title = name or vocal.name.replace(" (vocal)", "")
+    store.upsert_layer(Layer(id=f"gen-{gid}-song", name=f"Song · {title}", file=rel, role="generated"))
+    store.save()
+    out = {"file": rel, "beat_bpm": round(target, 2), "song_bpm": song_bpm, "stretch": round(factor, 5),
+           "offset_s": round(offset, 3), "duration": round(mix.shape[1] / sr, 1)}
+    if export_dir:
+        safe = "".join(c for c in f"{title} (GLORE)" if c not in '<>:"/\\|?*').strip()
+        mp3 = Path(export_dir) / f"{safe}.mp3"
+        _mp3(store.root / rel, mp3)
+        out["mp3"] = str(mp3)
+    report(1.0, "Done")
+    return out

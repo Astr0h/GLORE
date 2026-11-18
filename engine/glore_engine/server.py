@@ -109,6 +109,17 @@ class AroundVocalBody(BaseModel):
     export_dir: str | None = None  # also write an MP3 of the mix here
 
 
+class VocalOverBeatBody(BaseModel):
+    beat_layer: str
+    vocal_source: str
+    grid_source: str | None = None
+    beat_bpm: float | None = None
+    vocal_gain_db: float = 0.0
+    beat_gain_db: float = -4.0
+    export_dir: str | None = None
+    name: str | None = None
+
+
 class TrainBody(BaseModel):
     epochs: int | None = None   # default: picked from the track count
     rank: int | None = None     # default 64
@@ -558,6 +569,16 @@ def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | 
                 raise RuntimeError(str(e)) from None
 
         return _cloud_job("generate", "generate_around_vocal", work, gpu=True)
+
+    @app.post("/mix/vocal-over-beat")
+    def vocal_over_beat(body: VocalOverBeatBody):
+        def work(report):
+            try:
+                return gen.mix_vocal_over_beat(S(), report, **body.model_dump())
+            except (gen.GenerateError, KeyError, ValueError) as e:
+                raise RuntimeError(str(e)) from None
+
+        return {"job_id": app.state.jobs.start("vocal_over_beat", work).id}
 
     @app.get("/logs/{name}")
     def log_tail(name: str, lines: int = 80):

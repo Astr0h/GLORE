@@ -100,3 +100,43 @@ def test_around_vocal_mixes_clean_vocal_over_new_beat(store, tmp_path, monkeypat
     assert mix.shape == (2 * sr, 2)                     # stereo, as long as the longest part
     assert 0.85 < np.max(np.abs(mix)) < 0.9            # normalised to about -1 dBFS
     assert Path(res["mp3"]).name == "Song - GLORE soft house.mp3"
+
+
+def test_bar_offset_lines_up_downbeats():
+    # song bars at 1.0 + k*1.857 (129.2 BPM); stretched to 129 BPM; beat bars start at 0.30
+    f = 129 / 129.2
+    bar = 240 / 129
+    off = gen.bar_offset([1.0, 2.857], [0.30, 2.16], f, bar)
+    assert abs(((1.0 / f) + off - 0.30) % bar) < 1e-6 or abs(((1.0 / f) + off - 0.30) % bar - bar) < 1e-6
+    assert 0 <= off < bar
+    assert gen.bar_offset([], [0.3], f, bar) == 0.0
+
+
+def test_vocal_over_beat_end_to_end(store, tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    from glore_engine.project import Layer, Source
+
+    sr = 44100
+    bpm = 128.0
+    n = int(sr * 20)
+    t = np.arange(n) / sr
+    beat = np.zeros(n, dtype="float32")
+    for k in range(int(20 * bpm / 60)):  # clicky four-on-the-floor
+        i = int(k * 60 / bpm * sr)
+        beat[i:i + 800] += np.sin(2 * np.pi * 60 * t[:800]) * np.linspace(1, 0, 800)
+    (store.root / "generated").mkdir(parents=True, exist_ok=True)
+    sf.write(store.root / "generated" / "b.wav", np.stack([beat, beat], 1) * 0.5, sr)
+    store.upsert_layer(Layer(id="gen-b", name="beat", file="generated/b.wav", role="generated"))
+    store.sources_dir.mkdir(parents=True, exist_ok=True)
+    sf.write(store.sources_dir / "v.wav", np.stack([0.2 * np.sin(2 * np.pi * 330 * t[: sr * 10])] * 2, 1), sr)
+    store.add_source(Source(id="song", name="Song", kind="full_song", file="v.wav", original_path="x", duration=10,
+                            analysis={"bpm": 128.5, "downbeats": [0.5, 2.37]}))
+    store.add_source(Source(id="v", name="Song (vocal)", kind="vocal", file="v.wav", original_path="x", duration=10,
+                            derived_from="song", analysis={"bpm": 128.5}))
+    monkeypatch.setattr(gen, "_mp3", lambda wav, mp3: (mp3.parent.mkdir(parents=True, exist_ok=True), mp3.write_bytes(b"x")))
+    res = gen.mix_vocal_over_beat(store, lambda p, m: None, beat_layer="gen-b", vocal_source="v",
+                                  export_dir=str(tmp_path / "o"))
+    assert abs(res["beat_bpm"] - 128) < 3 and res["song_bpm"] == 128.5
+    assert 0 <= res["offset_s"] < 240 / res["beat_bpm"]
+    assert (store.root / res["file"]).exists() and res["mp3"].endswith("Song (GLORE).mp3")

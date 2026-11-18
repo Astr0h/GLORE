@@ -50,7 +50,12 @@ class FakeVolume:
 
     def get_bytes(self, key):
         p = self._p(key)
-        return p.read_bytes() if p.exists() else None
+        for _ in range(20):  # Windows denies a read while the fake pod is mid os.replace() on the file
+            try:
+                return p.read_bytes() if p.exists() else None
+            except PermissionError:
+                time.sleep(0.05)
+        return None
 
     def get_json(self, key):
         b = self.get_bytes(key)

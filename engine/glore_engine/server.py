@@ -94,6 +94,8 @@ class GenerateBody(BaseModel):
     seed: int = -1
     count: int = 1
     scale: float = 1.0
+    lm: str | None = "acestep-5Hz-lm-1.7B"   # song planner; None = DiT only (faster, much less musical)
+    export_dir: str | None = None
 
 
 class AroundVocalBody(BaseModel):

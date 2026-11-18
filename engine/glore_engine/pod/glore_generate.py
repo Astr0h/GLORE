@@ -55,6 +55,20 @@ def main(job_path: str) -> int:
     if not ok:
         raise RuntimeError(f"Model didn't load: {msg}")
 
+    llm = None
+    lm_name = job.get("lm")
+    if lm_name:
+        # The 5Hz LM plans the song (structure, rhythm, melody as audio codes) before the DiT renders it.
+        # Without it the DiT has no plan, which sounds like a shapeless wash.
+        say(0.18, "Loading the song planner")
+        from acestep.llm_inference import LLMHandler
+        llm = LLMHandler()
+        lm_msg, lm_ok = llm.initialize(checkpoint_dir=os.path.join(ace_dir, "checkpoints"), lm_model_path=lm_name,
+                                       backend="pt", device="cuda" if torch.cuda.is_available() else "cpu",
+                                       offload_to_cpu=True)
+        if not lm_ok:
+            raise RuntimeError(f"Song planner didn't load: {lm_msg}")
+
     caption = (job.get("caption") or "").strip()
     lora = job.get("lora")
     if lora:
@@ -77,8 +91,8 @@ def main(job_path: str) -> int:
         inference_steps=int(job.get("steps", 8 if variant == "turbo" else 50)),
         shift=float(job.get("shift", 3.0 if variant == "turbo" else 1.0)),
         seed=int(job.get("seed", -1)),
-        thinking=False,          # no 5Hz LM: keeps it inside 8 GB
-        use_cot_metas=False, use_cot_caption=False, use_cot_language=False,
+        thinking=bool(llm),
+        use_cot_metas=False, use_cot_caption=False, use_cot_language=False,  # keep our BPM/key/caption
     )
     if job.get("mode") == "complete":
         # Build the other instruments around an existing part (e.g. your vocal). Base model only.
@@ -96,7 +110,7 @@ def main(job_path: str) -> int:
                               use_random_seed=seed < 0, seeds=None if seed < 0 else [seed + i for i in range(count)])
     say(0.35, "Building around your vocal" if job.get("mode") == "complete" else f"Generating {params.duration:.0f} s")
     os.makedirs(job["out_dir"], exist_ok=True)
-    result = generate_music(dit, None, params, config, save_dir=job["out_dir"])
+    result = generate_music(dit, llm, params, config, save_dir=job["out_dir"])
     if not result.success:
         raise RuntimeError(result.error or result.status_message or "Generation failed")
     files = [{"path": a.get("path"), "seed": (a.get("params") or {}).get("seed")} for a in result.audios]

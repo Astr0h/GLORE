@@ -87,7 +87,8 @@ def run_generator(ace, job: dict, tmp: Path, log_path: Path, report: Report, lo:
 def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_run: str | None = None,
              use_lora: bool = True, caption: str | None = None, bpm: float | None = None, key: str | None = None,
              duration: float = 60.0, seed: int = -1, count: int = 1, scale: float = 1.0,
-             offload: bool = True) -> dict:
+             offload: bool = True, lm: str | None = "acestep-5Hz-lm-1.7B",
+             export_dir: str | None = None) -> dict:
     lora = find_lora(lora_run, pack) if use_lora else None
     if use_lora and not lora:
         raise GenerateError(f"No {PACKS[pack]['label']} LoRA yet. Train one on the LoRA Packs page, or turn the LoRA off.")
@@ -108,7 +109,7 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
            "caption": caption if caption is not None else default_caption(pack),
            "lora": {"path": lora["path"], "trigger": lora.get("trigger"), "scale": scale} if lora else None,
            "bpm": bpm, "key": key, "duration": duration, "seed": seed, "count": count,
-           "steps": inference.get("steps"), "shift": inference.get("shift"), "offload": offload}
+           "steps": inference.get("steps"), "shift": inference.get("shift"), "offload": offload, "lm": lm}
     (tmp / "job.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
 
     result = run_generator(ace, job, tmp, gen_dir / f"{gid}.log", report)
@@ -123,7 +124,13 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
         layer = Layer(id=f"gen-{gid}-{i + 1}", name=f"Generated · {label} · seed {f.get('seed')}",
                       file=f"generated/{name}", role="generated")
         store.upsert_layer(layer)
-        takes.append({"layer_id": layer.id, "file": layer.file, "seed": f.get("seed")})
+        take = {"layer_id": layer.id, "file": layer.file, "seed": f.get("seed")}
+        if export_dir:
+            tag = "LoRA" if lora else "no LoRA"
+            mp3 = Path(export_dir) / f"GLORE {caption or default_caption(pack)} ({tag}, seed {f.get('seed')}).mp3"
+            _mp3(gen_dir / name, mp3)
+            take["mp3"] = str(mp3)
+        takes.append(take)
     store.save()
     shutil.rmtree(tmp, ignore_errors=True)
     return {"takes": takes, "caption": result.get("caption"), "seconds": result.get("seconds"),

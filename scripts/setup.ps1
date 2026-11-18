@@ -98,8 +98,12 @@ Ok "Installed"
 # 8. Self-test ---------------------------------------------------------
 Step "Running engine self-test"
 Push-Location $Engine
-& $Py -m pip install pytest httpx --quiet --disable-pip-version-check 2>&1 | Out-Null
-& $Py -m pytest -q
+& $Py -c "import pytest, httpx, pytest_timeout" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    & $Py -m pip install pytest httpx pytest-timeout --quiet --disable-pip-version-check --timeout 20 2>&1 | Out-Null
+}
+# A stuck test fails after 120 s (with a traceback in setup.log) instead of hanging setup forever
+& $Py -m pytest -q -p no:cacheprovider --timeout=120 --timeout-method=thread --durations=5
 $testExit = $LASTEXITCODE
 Pop-Location
 if ($testExit -ne 0) { Warn "Some tests failed - send Claude setup.log." } else { Ok "All tests passed" }

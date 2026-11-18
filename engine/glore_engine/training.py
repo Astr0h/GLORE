@@ -64,7 +64,8 @@ def list_loras(pack: str | None = None) -> list[dict]:
             continue
         info["path"] = str(m.parent)
         out.append(info)
-    return sorted(out, key=lambda i: i.get("trained_at", 0), reverse=True)
+    # newest first; a run's own checkpoints (run_id@e<n>) sort after its final LoRA
+    return sorted(out, key=lambda i: (i.get("trained_at", 0), not i.get("checkpoint_of")), reverse=True)
 
 
 # ---------------------------------------------------------------- dataset bundle
@@ -92,28 +93,35 @@ def to_flac(wav: Path, flac: Path) -> Path:
     return flac
 
 
-def build_bundle(pack: str, report: Report | None = None, limit: int | None = None) -> Bundle:
+def build_bundle(pack: str, report: Report | None = None, limit: int | None = None,
+                 audio: str = "prepared", genre_ratio: int = 0) -> Bundle:
+    """audio = "prepared" (vocals stripped, the pack's training audio) or "full" (the original
+    tracks, vocal chops and all: closer to the real sound, no separation artefacts)."""
     report = report or (lambda p, m: None)
     d = datasets.pack_dir(pack)
-    items = [it for it in datasets.list_items(pack) if it.get("prepared") and (d / f"{it['id']}_train.wav").exists()]
+    suffix = "" if audio == "full" else "_train"
+    items = [it for it in datasets.list_items(pack)
+             if (audio == "full" or it.get("prepared")) and (d / f"{it['id']}{suffix}.wav").exists()]
     if limit:
         items = items[:limit]
     files, samples = [], []
     label = PACKS[pack]["label"]
     for i, it in enumerate(items):
         report(i / max(1, len(items)), f"Compressing {i + 1}/{len(items)}: {it.get('name', it['id'])}")
-        flac = to_flac(d / f"{it['id']}_train.wav", d / "_cloud" / f"{it['id']}.flac")
-        files.append((flac, f"datasets/{pack}/{it['id']}.flac"))
+        fname = f"{it['id']}_full.flac" if audio == "full" else f"{it['id']}.flac"  # never share a name
+        flac = to_flac(d / f"{it['id']}{suffix}.wav", d / "_cloud" / fname)
+        files.append((flac, f"datasets/{pack}/{fname}"))
         bpm = it.get("bpm")
         samples.append({
-            "id": it["id"], "audio_path": f"./{it['id']}.flac", "filename": f"{it['id']}.flac",
+            "id": it["id"], "audio_path": f"./{fname}", "filename": fname,
             "caption": it.get("caption") or datasets.caption(pack, it.get("moods", []), bpm, it.get("key")),
             "genre": label.lower(), "lyrics": "[Instrumental]", "is_instrumental": True,
             "bpm": int(round(float(bpm))) if bpm else "N/A", "keyscale": it.get("key") or "N/A",
             "timesignature": "4", "language": "unknown", "custom_tag": trigger(pack), "labeled": True,
         })
     doc = {"metadata": {"name": f"glore_{pack}", "custom_tag": trigger(pack), "tag_position": "prepend",
-                        "all_instrumental": True, "genre_ratio": 0, "num_samples": len(samples)},
+                        "all_instrumental": True, "genre_ratio": genre_ratio, "num_samples": len(samples),
+                        "audio": audio},
            "samples": samples}
     raw = json.dumps(doc, indent=2, sort_keys=True).encode()
     h = hashlib.sha1(raw)
@@ -146,15 +154,16 @@ def upload_bundle(vol: cloud.Volume, b: Bundle, report: Report) -> dict:
 
 
 def sync_scripts(vol: cloud.Volume) -> None:
-    for name in ("glore_pod.py", "pod_start.sh"):
+    for name in ("glore_pod.py", "glore_label.py", "pod_start.sh"):
         data = (POD_DIR / name).read_bytes().replace(b"\r\n", b"\n")
         vol.put_bytes(f"glore/{name}", data)
 
 
-def train_params(n_tracks: int, epochs: int | None = None, rank: int | None = None) -> dict:
+def train_params(n_tracks: int, epochs: int | None = None, rank: int | None = None,
+                 save_every: int | None = None) -> dict:
     rank = int(rank or 64)
     return {"epochs": int(epochs or glore_pod.default_epochs(n_tracks)), "rank": rank, "alpha": rank * 2,
-            "lr": 1e-4, "batch_size": 1, "grad_accum": 4, "save_every": 10, "log_every": 10,
+            "lr": 1e-4, "batch_size": 1, "grad_accum": 4, "save_every": int(save_every or 10), "log_every": 10,
             "optimizer": "adamw", "offload_encoder": False}
 
 
@@ -187,11 +196,12 @@ def pending_runs() -> dict:
 # ---------------------------------------------------------------- cloud training
 
 def train_cloud(pack: str, mgr: CloudManager, report: Report, epochs: int | None = None,
-                rank: int | None = None) -> dict:
+                rank: int | None = None, audio: str = "prepared", autolabel: bool = False,
+                save_every: int | None = None) -> dict:
     s = mgr.settings()
     if cloud.missing(s):
         raise CloudError("Finish the cloud settings first")
-    prepared = [it for it in datasets.list_items(pack) if it.get("prepared")]
+    prepared = [it for it in datasets.list_items(pack) if audio == "full" or it.get("prepared")]
     if len(prepared) < datasets.MIN_TRACKS:
         raise CloudError(f"Prepare at least {datasets.MIN_TRACKS} tracks first ({len(prepared)} prepared)")
     rp, vol = mgr.rp(), mgr.volume()
@@ -203,9 +213,10 @@ def train_cloud(pack: str, mgr: CloudManager, report: Report, epochs: int | None
         choices = cloud.gpu_choices(rp.gpus(), s["datacenter"], s["gpu"])
         mgr.check_budget(max(p for _, p in choices[:4]) * hard_cap / 3600)
 
-    b = build_bundle(pack, lambda p, m: report(0.02 + 0.08 * p, m))
-    params = train_params(b.count, epochs, rank)
-    run_id = f"{b.hash}-{s['variant']}-r{params['rank']}-e{params['epochs']}"
+    b = build_bundle(pack, lambda p, m: report(0.02 + 0.08 * p, m), audio=audio, genre_ratio=30 if autolabel else 0)
+    params = train_params(b.count, epochs, rank, save_every)
+    run_id = (f"{b.hash}-{s['variant']}-r{params['rank']}-e{params['epochs']}"
+              + ("-full" if audio == "full" else "") + ("-cap" if autolabel else ""))
     if any(l.get("run_id") == run_id for l in list_loras(pack)):
         raise CloudError("This pack is already trained with these exact tracks and settings")
 
@@ -218,7 +229,8 @@ def train_cloud(pack: str, mgr: CloudManager, report: Report, epochs: int | None
     job_id = uuid.uuid4().hex[:10]
     job = {"id": job_id, "mode": "train", "pack": pack, "run_id": run_id, "variant": s["variant"],
            "dataset_dir": f"datasets/{pack}", "tensor_dir": f"tensors/{pack}/{b.hash}-{s['variant']}",
-           "output_dir": f"loras/{pack}/{run_id}", "params": params, "max_duration": 240.0}
+           "output_dir": f"loras/{pack}/{run_id}", "params": params, "max_duration": 240.0,
+           "autolabel": autolabel, "genre_ratio": 30}
     vol.put_bytes(f"glore/queue/{job_id}.json", json.dumps(job).encode())
 
     if reuse:
@@ -286,14 +298,36 @@ def follow(job_id: str, mgr: CloudManager, report: Report, poll_s: float | None 
     dest = lora_root() / run["pack"] / run["run_id"]
     for name in ("adapter_config.json", "adapter_model.safetensors"):
         vol.download(f"{res.get('lora_dir', run['run_id'])}/{name}", dest / name)
+    captions = None
+    if res.get("labels"):
+        try:
+            vol.download(res["labels"], dest / "captions.json")
+            captions = str(dest / "captions.json")
+        except CloudError:
+            pass
     info = {"pack": run["pack"], "label": PACKS[run["pack"]]["label"], "run_id": run["run_id"],
             "trained_at": time.time(), "tracks": run["tracks"], "epochs": res.get("epochs"),
             "rank": run["params"]["rank"], "loss": res.get("loss"), "train_seconds": res.get("train_seconds"),
             "model": "ACE-Step 1.5", "size": "standard", "variant": run["variant"],
             "base_model": res.get("base_model") or glore_pod.VARIANT_DIRS[run["variant"]],
             "inference": res.get("inference") or glore_pod.VARIANT_INFERENCE[run["variant"]],
-            "trigger": trigger(run["pack"]), "source": "glore-cloud"}
+            "trigger": trigger(run["pack"]), "source": "glore-cloud", "captions": captions}
     (dest / "glore_lora.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    # Every saved checkpoint too, as its own LoRA (run_id@e<epoch>), so they can be compared by ear
+    finals = res.get("epochs")
+    for c in res.get("checkpoints") or []:
+        if c["epoch"] == finals:
+            continue
+        cdest = lora_root() / run["pack"] / f"{run['run_id']}@e{c['epoch']}"
+        report(0.98, f"Downloading the epoch {c['epoch']} checkpoint")
+        try:
+            for name in ("adapter_config.json", "adapter_model.safetensors"):
+                vol.download(f"{c['dir']}/{name}", cdest / name)
+        except CloudError:
+            continue
+        (cdest / "glore_lora.json").write_text(json.dumps(
+            {**info, "run_id": f"{run['run_id']}@e{c['epoch']}", "epochs": c["epoch"], "loss": None,
+             "checkpoint_of": run["run_id"]}, indent=2), encoding="utf-8")
     save_run(job_id, {"state": "done", "lora": str(dest)})
     report(1.0, "LoRA ready")
     return info
@@ -303,6 +337,8 @@ def _progress(st: dict) -> float:
     phase = st.get("phase")
     if phase == "setup":
         return 0.45
+    if phase == "labelling":
+        return 0.46
     if phase == "preprocessing":
         return 0.48
     if phase == "training":

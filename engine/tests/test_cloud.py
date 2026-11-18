@@ -82,6 +82,12 @@ out = pathlib.Path(sys.argv[1]); epochs = int(sys.argv[2]); delay = float(sys.ar
 for e in range(1, epochs + 1):
     print(f"[OK] Epoch {e}/{epochs} in 0.1s, Loss: {1.0 / e:.4f}", flush=True)
     time.sleep(delay)
+    if e % 2 == 0:  # Side-Step's checkpoint layout: adapter files flat in epoch_<n>_loss_<x>/
+        c = out / "checkpoints" / f"epoch_{e}_loss_{1.0 / e:.4f}"
+        c.mkdir(parents=True, exist_ok=True)
+        (c / "adapter_config.json").write_text('{"r": 64}')
+        (c / "adapter_model.safetensors").write_bytes(f"weights-e{e}".encode())
+        (c / "training_state.pt").write_bytes(b"s")
 (out / "final").mkdir(parents=True, exist_ok=True)
 (out / "final" / "adapter_config.json").write_text('{"r": 64}')
 (out / "final" / "adapter_model.safetensors").write_bytes(b"weights")
@@ -98,7 +104,17 @@ class FakeAce(glore_pod.Ace):
     def ensure(self, variant, log, status, extras=()):
         status.update(phase="setup", message="pretend install")
 
+    def autolabel(self, dataset_json, out_json, cache_json, log, status, genre_ratio=30):
+        from glore_engine.pod import glore_label
+        doc = json.loads(dataset_json.read_text())
+        labels = {smp["id"]: {"caption": f"glore_house, deep house with chopped vocals {i}", "genre": "house, uk garage"}
+                  for i, smp in enumerate(doc["samples"])}
+        cache_json.write_text(json.dumps(labels))
+        out_json.write_text(json.dumps(glore_label.merge(doc, labels, genre_ratio)))
+        self.labelled = json.loads(out_json.read_text())
+
     def preprocess(self, dataset_json, tensor_dir, variant, log, status, max_duration=240.0):
+        self.preprocessed_with = dataset_json.name
         assert json.loads(dataset_json.read_text())["samples"]
         tensor_dir.mkdir(parents=True, exist_ok=True)
         (tensor_dir / "a.pt").write_bytes(b"t")
@@ -387,6 +403,48 @@ def test_train_cloud_end_to_end(cl, monkeypatch):
     res = training.upload_bundle(cl["vol"], b, collect([]))
     assert res["uploaded"] == 0 and res["already_there"] == 4
     assert len([k for k in cl["vol"].puts if k.endswith(".flac")]) == n_before
+
+
+def test_train_full_tracks_with_captions_and_checkpoints(cl, monkeypatch):
+    monkeypatch.setattr(datasets, "MIN_TRACKS", 3)
+    make_pack("house", 3, cl["tmp"], prepared=False)          # full tracks don't need preparing
+    info = training.train_cloud("house", cl["mgr"], collect([]), epochs=6, audio="full", autolabel=True,
+                                save_every=2)
+    ace = cl["ace"]
+    assert ace.preprocessed_with == "dataset_labelled.json"
+    s0 = ace.labelled["samples"][0]
+    assert s0["caption"] == "deep house with chopped vocals 0" and s0["genre"] == "house, uk garage"
+    assert s0["audio_path"].endswith("_full.flac") and ace.labelled["metadata"]["genre_ratio"] == 30
+    assert "--save-every" in ace.cmds[-1] and ace.cmds[-1][ace.cmds[-1].index("--save-every") + 1] == "2"
+    assert info["run_id"].endswith("-full-cap") and info["captions"]
+    loras = training.list_loras("house")
+    assert loras[0]["run_id"] == info["run_id"]                 # the final LoRA stays the default
+    ck = {l["run_id"]: l for l in loras if l.get("checkpoint_of")}
+    assert set(ck) == {f"{info['run_id']}@e2", f"{info['run_id']}@e4"}
+    assert (Path(ck[f"{info['run_id']}@e2"]["path"]) / "adapter_model.safetensors").read_bytes() == b"weights-e2"
+    caps = json.loads(Path(info["captions"]).read_text())
+    assert len(caps) == 3
+
+
+def test_checkpoint_names(tmp_path):
+    for n in ("epoch_50_loss_0.7123", "epoch_100_loss_0.6", "epoch_7", "junk"):
+        d = tmp_path / "checkpoints" / n
+        d.mkdir(parents=True)
+        (d / "training_state.pt").write_bytes(b"s")
+        if n != "epoch_7":
+            (d / "adapter_model.safetensors").write_bytes(b"w")
+    assert glore_pod.latest_checkpoint(tmp_path).name == "epoch_100_loss_0.6"
+    assert [c["epoch"] for c in glore_pod.list_checkpoints(tmp_path)] == [50, 100]
+
+
+def test_label_merge_strips_trigger_and_keeps_bpm():
+    from glore_engine.pod import glore_label
+    doc = {"metadata": {"custom_tag": "glore_house"},
+           "samples": [{"id": "a", "caption": "house, 128 bpm", "bpm": 128}, {"id": "b", "caption": "house"}]}
+    out = glore_label.merge(doc, {"a": {"caption": "glore_house, warm  garage beat", "genre": "garage"}}, 30)
+    assert out["samples"][0]["caption"] == "warm garage beat" and out["samples"][0]["bpm"] == 128
+    assert out["samples"][1]["caption"] == "house"               # unlabelled tracks keep the old caption
+    assert out["metadata"]["genre_ratio"] == 30 and doc["samples"][0]["caption"] == "house, 128 bpm"
 
 
 def test_train_needs_enough_tracks(cl):

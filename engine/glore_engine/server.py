@@ -141,6 +141,9 @@ class FromSongBody(BaseModel):
 class TrainBody(BaseModel):
     epochs: int | None = None   # default: picked from the track count
     rank: int | None = None     # default 64
+    audio: str = "prepared"     # prepared (vocals stripped) | full (original tracks, chops kept)
+    autolabel: bool = False     # ACE-Step's planner writes a caption per track before training
+    save_every: int | None = None
 
 
 class LockBody(BaseModel):
@@ -638,10 +641,14 @@ def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | 
             raise HTTPException(400, "Epochs must be between 1 and 2000")
         if b.rank is not None and b.rank not in (8, 16, 32, 64, 128):
             raise HTTPException(400, "Rank must be 8, 16, 32, 64 or 128")
+        if b.audio not in ("prepared", "full"):
+            raise HTTPException(400, "audio must be prepared or full")
         if cloud.missing(cloud.load_settings()):
             raise HTTPException(400, "Finish the cloud settings first")
         return _cloud_job(f"train:{pack}", "train_lora",
-                          lambda r: training.train_cloud(pack, app.state.cloud, r, b.epochs, b.rank))
+                          lambda r: training.train_cloud(pack, app.state.cloud, r, b.epochs, b.rank,
+                                                         audio=b.audio, autolabel=b.autolabel,
+                                                         save_every=b.save_every))
 
     @app.post("/datasets/{pack}/fit-test")
     def dataset_fit_test(pack: str):

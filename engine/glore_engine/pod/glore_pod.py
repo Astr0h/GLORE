@@ -244,6 +244,25 @@ class Ace:
             raise RuntimeError("Preprocessing failed (see log)")
         done.write_text(str(now()))
 
+    def autolabel(self, dataset_json: Path, out_json: Path, cache_json: Path, log, status: Status,
+                  genre_ratio: int = 30) -> None:
+        """Have ACE-Step's song planner describe every track (glore_label.py, cached per track)."""
+        status.update(phase="labelling", message="Describing your tracks")
+        job_path = out_json.with_name("label_job.json")
+        job_path.write_text(json.dumps({"ace_dir": str(self.dir), "dataset_json": str(dataset_json),
+                                        "out_json": str(out_json), "cache_json": str(cache_json),
+                                        "genre_ratio": genre_ratio}), encoding="utf-8")
+
+        def on_line(line):
+            if line.startswith("GLORE_PROGRESS "):
+                _, p, msg = line.split(" ", 2)
+                status.update(message=msg, label_progress=float(p))
+
+        script = Path(__file__).with_name("glore_label.py")
+        code, _ = run(self.py(str(script), str(job_path)), self.dir, self.env, log, on_line=on_line)
+        if code or not out_json.exists():
+            raise RuntimeError("Describing the tracks failed (see log)")
+
     def train_cmd(self, tensor_dir: Path, out_dir: Path, variant: str, p: dict) -> list[str]:
         inf = VARIANT_INFERENCE[variant]
         cmd = self.train_py("--plain", "--yes", "fixed",
@@ -264,16 +283,29 @@ class Ace:
         return cmd
 
 
+def checkpoint_epoch(name: str) -> int | None:
+    """Side-Step names checkpoints epoch_<n>_loss_<x> (older builds: epoch_<n>)."""
+    m = re.match(r"epoch_(\d+)", name)
+    return int(m.group(1)) if m else None
+
+
 def latest_checkpoint(out_dir: Path) -> Path | None:
     best, best_n = None, -1
     for d in (out_dir / "checkpoints").glob("epoch_*"):
-        try:
-            n = int(d.name.split("_", 1)[1])
-        except ValueError:
-            continue
-        if n > best_n and (d / "training_state.pt").exists():
+        n = checkpoint_epoch(d.name)
+        if n is not None and n > best_n and (d / "training_state.pt").exists():
             best, best_n = d, n
     return best
+
+
+def list_checkpoints(out_dir: Path) -> list[dict]:
+    """Every saved checkpoint with an adapter, oldest first: [{epoch, dir}]."""
+    found = []
+    for d in (out_dir / "checkpoints").glob("epoch_*"):
+        n = checkpoint_epoch(d.name)
+        if n is not None and (d / "adapter_model.safetensors").exists():
+            found.append({"epoch": n, "dir": d.name})
+    return sorted(found, key=lambda c: c["epoch"])
 
 
 # ---------------------------------------------------------------- jobs
@@ -284,6 +316,13 @@ def run_train_job(job: dict, root: Path, ace: Ace, log, status: Status, should_s
     ds_json = root / job["dataset_dir"] / "dataset.json"
     tensor_dir = root / job["tensor_dir"]
     out_dir = root / job["output_dir"]
+    labels_rel = None
+    if job.get("autolabel"):
+        audio = (json.loads(ds_json.read_text(encoding="utf-8")).get("metadata") or {}).get("audio", "prepared")
+        labels_rel = f"{job['dataset_dir']}/labels_{audio}.json"   # full and vocal-stripped audio describe differently
+        labelled = ds_json.with_name("dataset_labelled.json")
+        ace.autolabel(ds_json, labelled, root / labels_rel, log, status, int(job.get("genre_ratio", 30)))
+        ds_json = labelled
     ace.preprocess(ds_json, tensor_dir, variant, log, status, job.get("max_duration", 240.0))
 
     epochs = int(job["params"]["epochs"])
@@ -310,6 +349,9 @@ def run_train_job(job: dict, root: Path, ace: Ace, log, status: Status, should_s
     if code or not (final / "adapter_model.safetensors").exists():
         raise RuntimeError("Out of GPU memory" if status.data.get("oom") else "Training failed (see log)")
     return {"lora_dir": job["output_dir"] + "/final", "epochs": epochs, "loss": status.data.get("loss"),
+            "checkpoints": [{**c, "dir": f"{job['output_dir']}/checkpoints/{c['dir']}"}
+                            for c in list_checkpoints(out_dir)],
+            "labels": labels_rel,
             "variant": variant, "base_model": VARIANT_DIRS[variant], "inference": VARIANT_INFERENCE[variant],
             "train_seconds": round(now() - t_train)}
 

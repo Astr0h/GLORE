@@ -6,7 +6,7 @@ const STEPS = [
   { id: 'analyse', label: 'Analyse', ready: true },
   { id: 'lock', label: 'Vocal Lock', ready: true },
   { id: 'arrange', label: 'Arrange' },
-  { id: 'generate', label: 'Generate' },
+  { id: 'generate', label: 'Generate', ready: true },
   { id: 'chops', label: 'Chops' },
   { id: 'vocal_fx', label: 'Vocal FX' },
   { id: 'mix', label: 'Mix' },
@@ -33,6 +33,7 @@ const state = {
   packs: [],
   packItems: {},           // pack id -> items (LoRA Packs page)
   cloud: { settings: null, status: null, open: false, draft: {}, job: null, following: {} },
+  gen: { opts: {}, job: null, loras: [] },
   trainOpts: {},           // pack id -> { epochs, rank } typed on the card
   fit: {},                 // pack id -> last 8 GB test result
   project: null,
@@ -128,6 +129,7 @@ async function boot() {
   }
   await loadPacks();
   await loadCloud();
+  await loadLoras();
   await refresh();
   state.step = state.project.step || 'import';
   render();
@@ -282,7 +284,7 @@ function render() {
   state.renderDeferred = false;
   state.viewWaves = [];
   view.innerHTML = '';
-  const fn = { import: viewImport, analyse: viewAnalyse, lock: viewLock, packs: viewPacks }[state.step] || viewLater;
+  const fn = { import: viewImport, analyse: viewAnalyse, lock: viewLock, generate: viewGenerate, packs: viewPacks }[state.step] || viewLater;
   fn(view);
 }
 document.addEventListener('focusout', () => setTimeout(() => { if (state.renderDeferred) render(); }, 0));
@@ -555,6 +557,7 @@ async function followCloudJob(key, jobId) {
     delete state.cloud.following[key];
     await loadPacks();
     await loadCloud();
+    await loadLoras();
     render();
   }
 }
@@ -982,6 +985,86 @@ function viewLock(view) {
 }
 
 // ---------- later steps
+// ---------- 5. Generate
+async function loadLoras() {
+  try { state.gen.loras = await api('/loras'); } catch (_) { state.gen.loras = []; }
+}
+
+function genField(key, attrs, label, tip) {
+  const o = state.gen.opts;
+  return el('label', { class: 'field' }, el('span', { class: 'label', 'data-tip': tip }, label),
+    el('input', { class: 'field-input' + (attrs.type === 'number' ? ' mono' : ''), spellcheck: 'false', ...attrs,
+      value: o[key] ?? '', oninput: (e) => { o[key] = e.target.value; } }));
+}
+
+function playTake(layerId, withVocal) {
+  for (const [id] of player.layers) player.setSolo(id, id === layerId || (withVocal && id === 'vocal-locked'));
+  renderLayers();
+  player.play(0);
+}
+
+async function runGenerate() {
+  const o = state.gen.opts;
+  const choice = o.lora ?? (state.gen.loras[0] ? `${state.gen.loras[0].pack}|${state.gen.loras[0].run_id}` : 'none');
+  const body = { use_lora: choice !== 'none' };
+  if (choice !== 'none') { const [pack, run] = choice.split('|'); body.pack = pack; body.lora_run = run; }
+  if (o.caption) body.caption = o.caption;
+  for (const [k, n] of [['bpm', 'bpm'], ['duration', 'duration'], ['count', 'count'], ['scale', 'scale'], ['seed', 'seed']]) {
+    if (o[k] !== undefined && o[k] !== '') body[n] = Number(o[k]);
+  }
+  if (o.key) body.key = o.key;
+  try {
+    const r = await api('/generate', { method: 'POST', body });
+    state.gen.job = { progress: 0, message: 'Starting' };
+    render();
+    const res = await waitJob(r.job_id, (j) => { state.gen.job = { progress: j.progress, message: j.message || '' }; updateGenStatus(); });
+    state.gen.job = null;
+    await refresh();
+    toast(`${res.takes.length} take${res.takes.length > 1 ? 's' : ''} ready · ${Math.round(res.seconds)} s`);
+    if (res.takes[0]) playTake(res.takes[0].layer_id, false);
+  } catch (e) { state.gen.job = null; render(); toast(e.message, true); }
+}
+
+function updateGenStatus() {
+  const box = document.getElementById('gen-status');
+  const j = state.gen.job;
+  if (!box || !j) return;
+  box.replaceChildren(el('div', { class: 'progress' }, el('div', { style: `width:${j.progress * 100}%` })), el('span', { class: 'msg' }, j.message));
+}
+
+function viewGenerate(view) {
+  const p = state.project;
+  const o = state.gen.opts;
+  const loras = state.gen.loras;
+  const options = [...loras.map((l) => [`${l.pack}|${l.run_id}`, `${l.label} · ${new Date(l.trained_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${l.epochs} ep`]), ['none', 'No LoRA']];
+  const sel = el('select', { class: 'field-input', onchange: (e) => { o.lora = e.target.value; } },
+    ...options.map(([v, t]) => el('option', { value: v }, t)));
+  sel.value = o.lora ?? options[0][0];
+  const busy = !!state.gen.job;
+  const takes = p.layers.filter((l) => l.role === 'generated').reverse();
+  const hasVocal = p.layers.some((l) => l.id === 'vocal-locked');
+  view.append(el('h1', {}, 'Generate'),
+    el('div', { class: 'panel gen' },
+      el('div', { class: 'fields' },
+        el('label', { class: 'field' }, el('span', { class: 'label', 'data-tip': 'Your trained style. Only LoRAs for the model that runs on this PC are listed.' }, 'LoRA'), sel),
+        genField('caption', { placeholder: 'house, hype' }, 'Prompt', 'Style words, comma-separated: genre, mood, instruments. The LoRA\'s trigger word is added for you.'),
+        genField('bpm', { type: 'number', min: 30, max: 300, placeholder: p.bpm ? String(Math.round(p.bpm * 10) / 10) : '128' }, 'BPM', 'Empty = the project tempo (follows your vocal).'),
+        genField('key', { placeholder: p.key || 'A minor' }, 'Key', 'Empty = the project key.'),
+        genField('duration', { type: 'number', min: 10, max: 480, placeholder: '60' }, 'Length · s', 'Longer takes need more time and memory.'),
+        genField('count', { type: 'number', min: 1, max: 4, placeholder: '1' }, 'Takes', 'Variations per run, 1–4. On 8 GB, one at a time is safest.'),
+        genField('scale', { type: 'number', min: 0, max: 1.5, step: 0.05, placeholder: '1' }, 'LoRA strength', '0 = plain ACE-Step, 1 = full LoRA style.'),
+        genField('seed', { type: 'number', placeholder: 'random' }, 'Seed', 'Same seed + same settings = same result. Empty = random.')),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn', disabled: busy, onclick: runGenerate, 'data-tip': 'Runs on your GPU. The first time also installs ACE-Step (~13 GB).' }, 'Generate'),
+        busy ? el('div', { class: 'status', id: 'gen-status' }, el('div', { class: 'progress' }, el('div', { style: `width:${state.gen.job.progress * 100}%` })), el('span', { class: 'msg' }, state.gen.job.message)) : null)),
+    takes.length ? el('div', { class: 'panel takes' },
+      el('strong', {}, 'Takes'),
+      ...takes.map((l) => el('div', { class: 'take-row' },
+        el('span', { class: 'take-name' }, l.name),
+        el('button', { class: 'btn small ghost', onclick: () => playTake(l.id, false) }, '▶ Play'),
+        hasVocal ? el('button', { class: 'btn small ghost', onclick: () => playTake(l.id, true), 'data-tip': 'This take with your locked vocal on top' }, '▶ With vocal') : null))) : null);
+}
+
 function viewLater(view) {
   const s = STEPS.find((x) => x.id === state.step);
   view.append(el('h1', {}, s.label),

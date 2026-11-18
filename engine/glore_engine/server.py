@@ -17,7 +17,7 @@ from . import __version__
 from .analysis import analyse, parse_key, key_name, camelot
 from .audio_io import SUPPORTED_EXTENSIONS, load_stereo, save_wav, duration_seconds
 from .project import ProjectStore, Source, Layer, JobRunner, KINDS, PACKS, new_id
-from . import separation, cleanup, linkimport, datasets, tracklist, cloud, training
+from . import separation, cleanup, linkimport, datasets, tracklist, cloud, training, generate as gen
 from .cloud import CloudError, CloudManager
 from .vocal_lock import lock_vocal
 
@@ -81,6 +81,19 @@ class CloudSettingsBody(BaseModel):
     gpu: str | None = None
     variant: str | None = None
     image: str | None = None
+
+
+class GenerateBody(BaseModel):
+    pack: str = "house"
+    lora_run: str | None = None   # default: the pack's newest LoRA
+    use_lora: bool = True
+    caption: str | None = None    # default: pack name (+ moods)
+    bpm: float | None = None      # default: project BPM
+    key: str | None = None        # default: project key
+    duration: float = 60.0
+    seed: int = -1
+    count: int = 1
+    scale: float = 1.0
 
 
 class TrainBody(BaseModel):
@@ -498,6 +511,44 @@ def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | 
     @app.post("/cloud/stop")
     def cloud_stop():
         return {"stopped": _cloud_errors(app.state.cloud.stop_all)}
+
+    @app.post("/generate")
+    def generate_ep(body: GenerateBody):
+        if body.pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        if not 10 <= body.duration <= 480:
+            raise HTTPException(400, "Length must be 10-480 seconds")
+        if not 1 <= body.count <= 4:
+            raise HTTPException(400, "1-4 takes")
+        if not 0 <= body.scale <= 1.5:
+            raise HTTPException(400, "LoRA strength must be 0-1.5")
+        if body.bpm is not None and not 30 <= body.bpm <= 300:
+            raise HTTPException(400, "BPM must be 30-300")
+
+        def work(report):
+            try:
+                return gen.generate(S(), report, **body.model_dump())
+            except gen.GenerateError as e:
+                raise RuntimeError(str(e)) from None
+
+        return _cloud_job("generate", "generate", work, gpu=True)
+
+    @app.get("/logs/{name}")
+    def log_tail(name: str, lines: int = 80):
+        """End of a GLORE log, for the app's log viewer and for remote help."""
+        home = training.glore_home()
+        files = {"fit-test": home / "fit-test" / "log.txt", "ace-install": home / "ace-install.log"}
+        if name == "generate":
+            logs = sorted((S().root / "generated").glob("*.log"), key=lambda f: f.stat().st_mtime)
+            path = logs[-1] if logs else None
+        elif name.startswith("cloud-"):
+            path = cloud.home() / f"log-{name[6:]}.txt"
+        else:
+            path = files.get(name)
+        if not path or not path.exists():
+            raise HTTPException(404, "No such log yet")
+        text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return {"path": str(path), "text": "\n".join(text[-max(1, min(lines, 2000)):])}
 
     @app.get("/loras")
     def loras():

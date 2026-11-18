@@ -227,3 +227,13 @@ def test_short_name_keeps_paths_under_windows_limit():
     n = gen.short_name(long)
     assert len(n) <= 49 and n.endswith("…") and not any(c in n for c in '<>:"/\\|?*')
     assert gen.short_name("house") == "house"
+
+
+def test_generate_can_use_the_sft_model_without_a_lora(store, monkeypatch):
+    seen = {}
+    real = gen.run_generator
+    monkeypatch.setattr(gen, "run_generator", lambda ace, job, *a, **k: (seen.update(job), real(ace, job, *a, **k))[1])
+    gen.generate(store, lambda p, m: None, caption="house", use_lora=False, model="sft")
+    assert seen["variant"] == "sft" and seen["steps"] == 50 and seen["shift"] == 1.0
+    with pytest.raises(gen.GenerateError, match="trained on turbo"):
+        gen.generate(store, lambda p, m: None, caption="house", model="sft")

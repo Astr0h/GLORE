@@ -88,12 +88,17 @@ def generate(store: ProjectStore, report: Report, *, pack: str = "house", lora_r
              use_lora: bool = True, caption: str | None = None, bpm: float | None = None, key: str | None = None,
              duration: float = 60.0, seed: int = -1, count: int = 1, scale: float = 1.0,
              offload: bool = True, lm: str | None = "acestep-5Hz-lm-1.7B",
-             rewrite_caption: bool = True, velocity_norm: float = 0.0,
+             rewrite_caption: bool = True, velocity_norm: float = 0.0, model: str | None = None,
              export_dir: str | None = None) -> dict:
+    """model = turbo | base | sft (default: the LoRA's own model, else turbo). SFT/base run 50 steps with CFG."""
     lora = find_lora(lora_run, pack) if use_lora else None
     if use_lora and not lora:
         raise GenerateError(f"No {PACKS[pack]['label']} LoRA yet. Train one on the LoRA Packs page, or turn the LoRA off.")
-    variant = (lora or {}).get("variant", "turbo")
+    if model and model not in glore_pod.VARIANT_DIRS:
+        raise GenerateError("model must be turbo, base or sft")
+    if lora and model and model != lora.get("variant", "turbo"):
+        raise GenerateError(f"This LoRA was trained on {lora.get('variant', 'turbo')}, not {model}")
+    variant = (lora or {}).get("variant") or model or "turbo"
     inference = (lora or {}).get("inference") or glore_pod.VARIANT_INFERENCE[variant]
     p = store.project
     bpm = bpm or p.bpm

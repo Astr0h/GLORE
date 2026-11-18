@@ -98,6 +98,7 @@ class GenerateBody(BaseModel):
     lm: str | None = "acestep-5Hz-lm-1.7B"   # song planner; None = DiT only (faster, much less musical)
     rewrite_caption: bool = True             # planner expands the prompt into a full description
     velocity_norm: float = 0.0               # >0 (e.g. 2.0) tames harsh / metallic artefacts
+    model: str | None = None                 # turbo | base | sft (no LoRA); default the LoRA's own / turbo
     export_dir: str | None = None
 
 

@@ -200,8 +200,8 @@ def train_cloud(pack: str, mgr: CloudManager, report: Report, epochs: int | None
     reuse = mgr.reusable_pod("train")
     if not reuse:
         report(0.01, f"Finding a free {s['gpu']}")
-        gpu_id, price = cloud.pick_gpu(rp.gpus(), s["datacenter"], s["gpu"])
-        mgr.check_budget(price * hard_cap / 3600)
+        choices = cloud.gpu_choices(rp.gpus(), s["datacenter"], s["gpu"])
+        mgr.check_budget(max(p for _, p in choices[:4]) * hard_cap / 3600)
 
     b = build_bundle(pack, lambda p, m: report(0.02 + 0.08 * p, m))
     params = train_params(b.count, epochs, rank)
@@ -212,6 +212,9 @@ def train_cloud(pack: str, mgr: CloudManager, report: Report, epochs: int | None
     up = upload_bundle(vol, b, lambda p, m: report(0.10 + 0.28 * p, m))
     sync_scripts(vol)
 
+    if not reuse:  # nothing is running, so anything still queued is left over from a failed start
+        for key in vol.list_keys("glore/queue/"):
+            vol.delete(key)
     job_id = uuid.uuid4().hex[:10]
     job = {"id": job_id, "mode": "train", "pack": pack, "run_id": run_id, "variant": s["variant"],
            "dataset_dir": f"datasets/{pack}", "tensor_dir": f"tensors/{pack}/{b.hash}-{s['variant']}",
@@ -222,9 +225,12 @@ def train_cloud(pack: str, mgr: CloudManager, report: Report, epochs: int | None
         row = reuse
         report(0.40, "Sending the job to the cloud GPU that's already running")
     else:
-        report(0.40, f"Starting a {gpu_id}")
-        row = mgr.start_pod("train", gpu_id, price, hard_cap, float(s["idle_minutes"]),
-                            meta={"pack": pack, "run_id": run_id})
+        try:
+            row = mgr.start_pod_any("train", choices[:4], hard_cap, float(s["idle_minutes"]),
+                                    meta={"pack": pack, "run_id": run_id}, report=lambda m: report(0.40, m))
+        except CloudError:
+            vol.delete(f"glore/queue/{job_id}.json")
+            raise
     meta = {"pack": pack, "run_id": run_id, "pod_id": row["pod_id"], "state": "running", "tracks": b.count,
             "params": params, "variant": s["variant"], "upload": up, "started": time.time()}
     save_run(job_id, meta)
@@ -335,7 +341,11 @@ def connection_test(mgr: CloudManager, report: Report, poll_s: float | None = No
     job_id = uuid.uuid4().hex[:10]
     vol.put_bytes(f"glore/queue/{job_id}.json", json.dumps({"id": job_id, "mode": "test", "token": token}).encode())
     report(0.25, f"Starting a test pod ({gpu_id}, ${price:.2f}/h)")
-    row = mgr.start_pod("test", gpu_id, price, cloud.TEST_HARD_CAP_S, 0)
+    try:
+        row = mgr.start_pod("test", gpu_id, price, cloud.TEST_HARD_CAP_S, 0)
+    except CloudError:
+        vol.delete(f"glore/queue/{job_id}.json")
+        raise
     pid = row["pod_id"]
     try:
         while True:

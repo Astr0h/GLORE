@@ -622,7 +622,7 @@ function cloudSettingsForm() {
       field('Idle stop · min', 'The GPU shuts itself down after this long with nothing to do.', settingInput('idle_minutes', { type: 'number', min: 1, max: 120 })),
       field('Hard cap · h', 'No GPU session ever runs longer than this, whatever happens. A run cut short resumes from its last checkpoint.', settingInput('hard_cap_hours', { type: 'number', min: 0.5, max: 48, step: 0.5 })),
       field('Monthly limit · $', 'GLORE won\'t start a run that could go over this, and stops the GPU if it\'s reached. 0 = no limit.', settingInput('monthly_limit', { type: 'number', min: 0, step: 1 })),
-      field('GPU', 'Picked by name: the cheapest one in stock whose name contains this.', settingInput('gpu', { placeholder: 'A100' })),
+      field('GPU', 'Comma-separated, in order of preference. The first one in stock is used; if it sells out while starting, the next one is tried.', settingInput('gpu', { placeholder: 'RTX 5090, A100' })),
       field('Base model', 'ACE-Step 1.5 standard (2B). LoRAs only work on the model they were trained on: turbo is what runs on your 8 GB card.',
         settingSelect('variant', [['turbo', 'Standard · turbo'], ['base', 'Standard · base'], ['sft', 'Standard · sft']]))),
     el('div', { class: 'row' }, el('button', { class: 'btn small', onclick: save }, 'Save')));

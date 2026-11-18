@@ -44,7 +44,7 @@ DEFAULTS = {
     "idle_minutes": 10,
     "hard_cap_hours": 4.0,
     "monthly_limit": 20.0,     # USD; 0 = no limit
-    "gpu": "A100",             # cheapest in-stock GPU whose name contains this (A100 80GB: ~$2.19/h)
+    "gpu": "RTX 5090, A100",   # preference list: first in-stock match wins (5090 32GB ~$1.39/h, A100 80GB ~$2.19/h)
     "variant": "turbo",        # ACE-Step 1.5 standard (2B) DiT variant the LoRA is trained on
     "image": DEFAULT_IMAGE,
 }
@@ -252,17 +252,30 @@ def available_in(g: dict, dc: str) -> bool:
     return False
 
 
-def pick_gpu(gpus: list[dict], dc: str, want: str = "H100") -> tuple[str, float]:
-    """Cheapest GPU whose id/name contains `want` and that's in stock in the volume's datacenter."""
-    cands = [g for g in gpus if want.lower() in (str(g.get("id", "")) + " " + str(g.get("name", ""))).lower()
-             and g.get("secure", True) is not False and gpu_price(g)]
-    if not cands:
-        raise CloudError(f"RunPod doesn't list a {want} right now")
-    stocked = [g for g in cands if available_in(g, dc)]
-    if not stocked:
-        raise CloudError(f"No {want} free in {dc} right now. Try again in a few minutes.")
-    g = min(stocked, key=gpu_price)
-    return g["id"], gpu_price(g)
+def gpu_choices(gpus: list[dict], dc: str, wants: str = "A100") -> list[tuple[str, float]]:
+    """In-stock GPUs in the volume's datacenter, for a comma-separated preference list
+    ("RTX 5090, A100"): every match for the first name (cheapest first), then the next name..."""
+    out: list[tuple[str, float]] = []
+    names = [w.strip() for w in str(wants).split(",") if w.strip()] or ["A100"]
+    for want in names:
+        cands = [g for g in gpus if want.lower() in (str(g.get("id", "")) + " " + str(g.get("name", ""))).lower()
+                 and g.get("secure", True) is not False and gpu_price(g) and available_in(g, dc)]
+        for g in sorted(cands, key=gpu_price):
+            if g["id"] not in [o[0] for o in out]:
+                out.append((g["id"], gpu_price(g)))
+    if not out:
+        raise CloudError(f"No {' or '.join(names)} free in {dc} right now. Try again in a few minutes.")
+    return out
+
+
+def pick_gpu(gpus: list[dict], dc: str, want: str = "A100") -> tuple[str, float]:
+    return gpu_choices(gpus, dc, want)[0]
+
+
+def is_capacity_error(e: Exception) -> bool:
+    m = str(e).lower()
+    return any(k in m for k in ("no longer any instances", "no instances", "not enough", "insufficient",
+                                "out of stock", "unavailable", "not available"))
 
 
 def pick_cheapest(gpus: list[dict], dc: str) -> tuple[str, float]:
@@ -373,6 +386,20 @@ class Volume:
             self.s3.download_file(self.bucket, key, str(dest))
         except Exception as e:
             raise CloudError(_s3_msg(e)) from None
+
+    def list_keys(self, prefix: str) -> list[str]:
+        try:
+            r = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
+            return [o["Key"] for o in r.get("Contents", [])]
+        except Exception as e:
+            raise CloudError(_s3_msg(e)) from None
+
+    def delete(self, key: str) -> None:
+        try:
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
+        except Exception as e:
+            if not _is_missing(e):
+                raise CloudError(_s3_msg(e)) from None
 
     def tail(self, key: str, n_bytes: int = 4000) -> str:
         try:
@@ -509,6 +536,21 @@ class CloudManager:
         self.ledger.add(row)
         self.watch(pid)
         return row
+
+    def start_pod_any(self, kind: str, choices: list[tuple[str, float]], hard_cap_s: float, idle_min: float,
+                      meta: dict | None = None, report=None) -> dict:
+        """Try each GPU in order; one selling out between the stock check and the start is common."""
+        last = None
+        for gpu_id, price in choices:
+            if report:
+                report(f"Starting a {gpu_id} (${price:.2f}/h)")
+            try:
+                return self.start_pod(kind, gpu_id, price, hard_cap_s, idle_min, meta)
+            except CloudError as e:
+                if not is_capacity_error(e):
+                    raise
+                last = e
+        raise CloudError(f"Every matching GPU sold out while starting ({last}). Try again in a few minutes.")
 
     def reusable_pod(self, kind: str) -> dict | None:
         """A training pod that's already up (e.g. idling after a run) can take the next job."""

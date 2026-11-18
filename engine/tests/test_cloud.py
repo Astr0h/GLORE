@@ -63,6 +63,14 @@ class FakeVolume:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(self._p(key).read_bytes())
 
+    def list_keys(self, prefix):
+        base = self._p(prefix)
+        return [str(f.relative_to(self.root)).replace("\\", "/") for f in base.rglob("*") if f.is_file()] \
+            if base.exists() else []
+
+    def delete(self, key):
+        self._p(key).unlink(missing_ok=True)
+
     def tail(self, key, n=4000):
         b = self.get_bytes(key) or b""
         return b[-n:].decode()
@@ -123,6 +131,7 @@ class FakeRunPod:
     def __init__(self, vol: FakeVolume, ace: FakeAce):
         self.vol, self.ace = vol, ace
         self.pods, self.bodies = {}, []
+        self.sold_out = set()   # gpu ids that fail at create time
 
     def gpus(self, include_availability=True):
         return self.GPUS
@@ -141,6 +150,9 @@ class FakeRunPod:
         return {"id": "vol123", "name": name, "size": size, "dataCenter": dc}
 
     def create_pod(self, body):
+        if body["gpu"]["id"] in self.sold_out:
+            raise CloudError("There are no longer any instances available with the requested specifications. "
+                             "Please refresh and try again.")
         pid = f"pod{len(self.pods) + 1}"
         self.bodies.append(body)
         self.pods[pid] = "RUNNING"
@@ -464,3 +476,27 @@ def test_volume_uses_runpod_s3_endpoint():
         assert v.get_json("glore/runs/x/status.json") is None
         with pytest.raises(CloudError, match="refused the key"):
             v.put_bytes("x", b"1")
+
+
+def test_sold_out_gpu_falls_back_and_leaves_no_stale_job(cl, monkeypatch):
+    monkeypatch.setattr(datasets, "MIN_TRACKS", 1)
+    cloud.save_settings({"gpu": "H100, A100", "datacenter": "EU-RO-1"})
+    make_pack("house", 1, cl["tmp"])
+    # a job left behind by an earlier failed start must not run again
+    cl["vol"].put_bytes("glore/queue/stale.json", json.dumps({"id": "stale", "mode": "test"}).encode())
+    cl["rp"].sold_out = {"NVIDIA H100 80GB HBM3"}
+    training.train_cloud("house", cl["mgr"], collect([]), epochs=2)
+    assert [b["gpu"]["id"] for b in cl["rp"].bodies] == ["NVIDIA A100-SXM4-80GB"]
+    assert not (cl["vol"].root / "glore" / "runs" / "stale").exists()
+    # everything sold out: clear error, and the queued job is removed
+    cl["rp"].sold_out = {"NVIDIA H100 80GB HBM3", "NVIDIA A100-SXM4-80GB"}
+    cl["mgr"].stop_all()
+    make_pack("rnb_rap", 1, cl["tmp"] / "r")
+    with pytest.raises(CloudError, match="sold out"):
+        training.train_cloud("rnb_rap", cl["mgr"], collect([]), epochs=2)
+    assert cl["vol"].list_keys("glore/queue/") == []
+
+
+def test_gpu_choices_order():
+    ch = cloud.gpu_choices(FakeRunPod.GPUS, "EU-RO-1", "A4000, H100, A100")
+    assert [c[0] for c in ch] == ["NVIDIA RTX A4000", "NVIDIA H100 80GB HBM3", "NVIDIA A100-SXM4-80GB"]

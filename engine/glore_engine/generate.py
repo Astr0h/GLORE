@@ -177,11 +177,12 @@ def generate_around_vocal(store: ProjectStore, report: Report, *, source_id: str
     report(0.72, "Separating the new beat from the model's copy of the vocal")
     stems = separation.separate(full, tmp / "stems", progress=lambda pr, m: report(0.72 + 0.18 * pr, m))
     sr = audio_io.PROJECT_SR
-    beat = sum(audio_io.load_stereo(stems[n], sr) for n in stems if n != "vocals")
+    parts = [audio_io.load_stereo(stems[k], sr) for k in stems if k != "vocals"]   # each (2, samples)
     voc = audio_io.load_stereo(vocal_path, sr)
-    n = max(len(beat), len(voc))
-    pad = lambda x: np.pad(x, ((0, n - len(x)), (0, 0)))
-    beat, voc = pad(beat), pad(voc)
+    n = max([voc.shape[1], *[x.shape[1] for x in parts]])
+    pad = lambda x: np.pad(x, ((0, 0), (0, n - x.shape[1])))  # resampling leaves lengths a few samples apart
+    beat = sum(pad(x) for x in parts)
+    voc = pad(voc)
     mix = voc + beat * (10 ** (beat_gain_db / 20))
     mix *= 0.89 / max(1e-6, float(np.max(np.abs(mix))))   # peak at about -1 dBFS
 

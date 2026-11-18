@@ -86,9 +86,10 @@ def test_around_vocal_mixes_clean_vocal_over_new_beat(store, tmp_path, monkeypat
     def fake_sep(path, out_dir, progress=None, **kw):
         out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
         stems = {}
-        for name, f in (("drums", 60), ("bass", 80), ("other", 300), ("vocals", 440)):
+        for i, (name, f) in enumerate((("drums", 60), ("bass", 80), ("other", 300), ("vocals", 440))):
             stems[name] = out / f"{name}.wav"
-            sf.write(stems[name], np.stack([0.1 * np.sin(2 * np.pi * f * t)] * 2, 1).astype("float32"), sr)
+            tt = t[: len(t) - 57 * i]  # real stems come back a few samples apart
+            sf.write(stems[name], np.stack([0.1 * np.sin(2 * np.pi * f * tt)] * 2, 1).astype("float32"), sr)
         return stems
 
     monkeypatch.setattr(separation, "separate", fake_sep)
@@ -96,5 +97,6 @@ def test_around_vocal_mixes_clean_vocal_over_new_beat(store, tmp_path, monkeypat
     res = gen.generate_around_vocal(store, lambda p, m: None, export_dir=str(tmp_path / "out"))
     assert set(res["files"]) == {"beat", "mix"} and res["vocal"] == "Song (vocal)"
     mix, _ = sf.read(store.root / res["files"]["mix"])
+    assert mix.shape == (2 * sr, 2)                     # stereo, as long as the longest part
     assert 0.85 < np.max(np.abs(mix)) < 0.9            # normalised to about -1 dBFS
     assert Path(res["mp3"]).name == "Song - GLORE soft house.mp3"

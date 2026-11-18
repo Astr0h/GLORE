@@ -533,7 +533,8 @@ setInterval(async () => {
 
 function updateCloudPanel() {
   const cur = document.getElementById('cloud-panel');
-  if (!cur || cur.contains(document.activeElement)) return;   // don't disturb typing
+  const a = document.activeElement;
+  if (!cur || (cur.contains(a) && ['INPUT', 'SELECT'].includes(a.tagName))) return;   // don't disturb typing
   cur.replaceWith(cloudPanel());
 }
 

@@ -244,8 +244,18 @@ def follow(job_id: str, mgr: CloudManager, report: Report, poll_s: float | None 
     pid = run["pod_id"]
     vol = mgr.volume()
     last_hb, gone_at = None, None
+    read_errors = 0
     while True:
-        st = vol.get_json(f"glore/runs/{job_id}/status.json")
+        try:
+            st = vol.get_json(f"glore/runs/{job_id}/status.json")
+            read_errors = 0
+        except CloudError:
+            # a blip reading the status file must not abandon a run that is still training
+            read_errors += 1
+            if read_errors > 30:
+                raise
+            time.sleep(poll_s)
+            continue
         row = next((r for r in mgr.ledger.rows() if r["pod_id"] == pid), {})
         cost = cloud.Ledger.cost(row) if row else 0.0
         if st:

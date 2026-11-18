@@ -510,3 +510,27 @@ def test_trainer_runs_from_a_folder_holding_ace_and_data(tmp_path):
     cmd = ace.train_cmd(tensors, out, "turbo", training.train_params(10))
     assert cmd[:6] == ["uv", "run", "--no-sync", "--project", str(tmp_path / "ace"), "python"]
     assert cmd[6] == str(tmp_path / "ace" / "train.py")
+
+
+def test_follow_survives_storage_read_blips(cl, monkeypatch):
+    monkeypatch.setattr(datasets, "MIN_TRACKS", 1)
+    cl["ace"].delay = 0.1
+    make_pack("house", 1, cl["tmp"])
+    real = cl["vol"].get_json
+    calls = {"n": 0}
+
+    def flaky(key):
+        calls["n"] += 1
+        if calls["n"] % 3 == 0:
+            raise CloudError("Cloud storage error: Expected checksum Ndw89w== did not match")
+        return real(key)
+
+    cl["vol"].get_json = flaky
+    info = training.train_cloud("house", cl["mgr"], collect([]), epochs=5)
+    assert info["epochs"] == 5 and calls["n"] >= 3
+
+
+def test_volume_disables_crc_checksums():
+    v = cloud.Volume({**SETTINGS})
+    assert v.s3.meta.config.response_checksum_validation == "when_required"
+    assert v.s3.meta.config.request_checksum_calculation == "when_required"

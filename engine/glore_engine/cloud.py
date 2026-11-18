@@ -336,7 +336,11 @@ class Volume:
                 aws_access_key_id=s["s3_access_key"], aws_secret_access_key=s["s3_secret"],
                 config=Config(signature_version="s3v4", s3={"addressing_style": "path"},
                               retries={"max_attempts": 8, "mode": "standard"},
-                              connect_timeout=20, read_timeout=120))
+                              connect_timeout=20, read_timeout=120,
+                              # RunPod's S3 doesn't do the newer default CRC checksums: a file the pod
+                              # rewrites while we read it failed with "Expected checksum ... did not match"
+                              request_checksum_calculation="when_required",
+                              response_checksum_validation="when_required"))
         self.s3 = client
         self.bucket = s["volume_id"]
 

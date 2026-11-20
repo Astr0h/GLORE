@@ -661,7 +661,8 @@ def next_job(queue: Path) -> Path | None:
 def pod_main(root: Path = Path("/workspace")) -> None:
     idle_s = float(os.environ.get("GLORE_IDLE_MIN", "10")) * 60
     hard_cap = float(os.environ.get("GLORE_HARD_CAP_S", str(4 * 3600)))
-    started = now()
+    started = float(os.environ.get("GLORE_POD_STARTED") or now())  # survives a restart on new code
+    os.environ["GLORE_POD_STARTED"] = str(started)
     queue = root / "glore" / "queue"
     queue.mkdir(parents=True, exist_ok=True)
     pod_log = open(root / "glore" / f"pod-{os.environ.get('RUNPOD_POD_ID', 'local')}.log", "a", encoding="utf-8")
@@ -698,11 +699,20 @@ def pod_main(root: Path = Path("/workspace")) -> None:
             time.sleep(15)
 
     threading.Thread(target=watchdog, daemon=True).start()
+    me = Path(__file__).resolve()
+    my_code = me.read_bytes()
     while True:
         path = next_job(queue)
         if not path:
             time.sleep(10)
             continue
+        try:  # GLORE was updated while this pod idled: restart on the new code before taking the job
+            if me.read_bytes() != my_code:
+                pod_log.write(f"{time.ctime()} glore_pod.py changed, restarting on the new version\n")
+                pod_log.flush()
+                os.execv(sys.executable, [sys.executable, str(me), *sys.argv[1:]])
+        except OSError:
+            pass
         process_job(path, root, ace, state)
 
 

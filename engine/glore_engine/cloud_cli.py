@@ -35,7 +35,7 @@ from .cloud import CloudError, CloudManager, Ledger
 from .pod import glore_pod
 
 LEDGER_KEY = "glore/ledger-cloud.json"
-DEFAULT_GPUS = "A100, RTX 6000 Ada, L40S, RTX 5090, H100"
+DEFAULT_GPUS = "A100, RTX 6000 Ada, L40S, RTX 5090"  # no H100: $4.39/h would eat the budget
 
 
 def env_settings() -> dict:

@@ -116,6 +116,11 @@ a { color: var(--accent); }
 .pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .pill { padding: 7px 12px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line-strong); font-size: 13px; color: var(--dim); cursor: pointer; }
 .pill.on { background: var(--accent-soft); color: var(--accent); border-color: rgba(255,143,61,.4); }
+.drop { display: flex; align-items: center; justify-content: center; min-height: 86px; border: 1.5px dashed var(--line-strong);
+  border-radius: 12px; background: var(--panel-2); color: var(--dim); font-size: 14px; cursor: pointer; text-align: center;
+  padding: 14px; margin: 0; transition: border-color .15s, color .15s; }
+.drop:hover, .drop.has { border-color: var(--accent); color: var(--text); }
+.beat-link { font-size: 12px; }
 @media (min-width: 700px) { main { padding: 26px; } }
 </style>
 </head>
@@ -142,8 +147,40 @@ a { color: var(--accent); }
         <input id="repo" value="Astr0h/GLORE">
         <button class="btn wide" id="connectBtn">Connect</button>
         <div class="hint">Token: GitHub → Settings → Developer settings → Fine-grained tokens → only the GLORE repo,
-          with <b>Actions: Read and write</b> and <b>Contents: Read</b>. The key unlocks your encrypted status file.</div>
+          with <b>Actions: Read and write</b> and <b>Contents: Read and write</b> (uploads). The key unlocks your encrypted status file.</div>
       </div>
+    </div>
+  </section>
+
+  <!-- song -->
+  <section class="view" id="v-song">
+    <h2>Your vocal → a song</h2>
+    <div class="card hl">
+      <label>Audio</label>
+      <label class="drop" id="drop"><input type="file" id="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.aiff,.ogg" hidden>
+        <span id="fileLabel">Tap to choose a vocal or a song</span></label>
+      <label>What is it?</label>
+      <div class="pill-row" id="kindPills">
+        <span class="pill on" data-k="vocal">Just the vocal</span>
+        <span class="pill" data-k="song">A full song (take the vocal out)</span>
+      </div>
+      <label>Sound of the beat</label>
+      <textarea id="songPrompt" placeholder="emotional UK house, warm piano chords, shuffled garage drums, deep sub bass, chopped vocal textures"></textarea>
+      <label>LoRA</label>
+      <select id="songLora"></select>
+      <label>LoRA strength <span class="val" id="songScaleVal">1.00</span></label>
+      <input type="range" id="songScale" min="0.2" max="1.4" step="0.05" value="1">
+      <label>Instruments to add</label>
+      <div class="pill-row" id="trackPills"></div>
+      <div class="row">
+        <div><label>BPM <span class="faint">(blank = detect)</span></label><input id="songBpm" type="number" inputmode="decimal" placeholder="auto"></div>
+        <div><label>Key</label><select id="songKey"></select></div>
+      </div>
+      <label>Takes</label>
+      <div class="pill-row" id="songCountPills"></div>
+      <button class="btn wide" id="songBtn">Build the song</button>
+      <div class="hint" id="songHint">Your file is encrypted on this device before upload. The beat is written while the model hears your vocal; then your real vocal goes on top. About 10–20 minutes.</div>
+      <div class="bar" id="upBar" style="display:none"><i style="width:0%"></i></div>
     </div>
   </section>
 
@@ -215,7 +252,8 @@ a { color: var(--accent); }
 </main>
 
 <nav id="nav">
-  <button data-v="create" class="on"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>Create</button>
+  <button data-v="song" class="on"><svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>Song</button>
+  <button data-v="create"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>Create</button>
   <button data-v="takes"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Takes</button>
   <button data-v="train"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Train</button>
   <button data-v="cloud"><svg viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 1 0-1.4-8.8A6 6 0 0 0 4.5 13 3 3 0 0 0 6 19z"/></svg>Cloud</button>
@@ -304,11 +342,16 @@ function render() {
   $("#updated").textContent = state ? ago(state.updated) : "never";
   renderLoras(); renderTakes(); renderTrain(); renderCloud(); renderRuns();
 }
+function loraVariant(v) { return !v ? "xl_sft" : v.includes("xl_sft") ? "xl_sft" : v.includes("-sft-") ? "sft" : v.includes("-base-") ? "base" : "turbo"; }
 function renderLoras() {
-  const sel = $("#lora"), keep = sel.value || store.get("lora", null);
-  const opts = [`<option value="">No LoRA (plain model)</option>`];
+  fillLoras($("#lora"), "lora", () => true, "No LoRA (plain XL-SFT)");
+  fillLoras($("#songLora"), "songLora", (run) => loraVariant(run) !== "turbo", "No LoRA (plain XL-SFT)");
+}
+function fillLoras(sel, storeKey, ok, none) {
+  const keep = sel.value || store.get(storeKey, null);
+  const opts = [`<option value="">${none}</option>`];
   const L = (state && state.loras) || {};
-  Object.keys(L).sort().reverse().forEach((run) => {
+  Object.keys(L).filter(ok).sort().reverse().forEach((run) => {
     const pts = L[run].points.slice().sort((a, b) => (a === "final") - (b === "final") || parseInt(a.slice(1)) - parseInt(b.slice(1)));
     const label = run.includes("xl_sft") ? "XL-SFT" : run.includes("-sft-") ? "SFT" : run.includes("turbo") ? "Turbo" : run;
     pts.forEach((p) => { const v = p === "final" ? run : `${run}@${p}`;
@@ -320,15 +363,18 @@ function renderLoras() {
 }
 function statusBadge(phase) { const p = phase || "unknown"; return `<span class="status ${esc(p)}">${["done", "error", "stopped"].includes(p) ? "" : '<span class="dot on"></span>'}${esc(p)}</span>`; }
 function renderTakes() {
-  const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "generate");
-  if (!jobs.length) { $("#takesList").innerHTML = `<div class="card empty">No takes yet. Make some on the Create tab.</div>`; return; }
+  const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "generate" || j.mode === "song");
+  if (!jobs.length) { $("#takesList").innerHTML = `<div class="card empty">No takes yet. Make some on the Song or Create tab.</div>`; return; }
   $("#takesList").innerHTML = jobs.map((j) => {
-    const head = `<div class="take-top"><span class="dim mono">${new Date((j.started || 0) * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span><span class="spacer"></span>${statusBadge(j.phase)}</div>`;
+    const when = new Date((j.started || 0) * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    const tag = j.mode === "song" ? `Song${j.bpm ? ` · ${Math.round(j.bpm)} BPM` : ""}${j.key ? ` · ${esc(j.key)}` : ""} · ` : "";
+    const head = `<div class="take-top"><span class="dim mono">${tag}${when}</span><span class="spacer"></span>${statusBadge(j.phase)}</div>`;
     if (j.phase !== "done") return `<div class="card">${head}<div class="cap" style="margin-top:8px">${esc(j.message || "")}</div></div>`;
     const takes = (j.takes || []).map((t) => t.url ? `<div class="take">
         <div class="take-top"><b>${esc(t.name)}</b><span class="spacer"></span><span class="faint mono">seed ${esc(t.seed ?? "")}</span>
           <a class="ghost small" style="text-decoration:none;color:var(--text)" href="${esc(t.url)}" target="_blank" rel="noopener">MP3</a></div>
         <audio controls preload="none" src="${esc(t.url)}"></audio>
+        ${t.beat_url ? `<a class="beat-link" href="${esc(t.beat_url)}" target="_blank" rel="noopener">Beat only (no vocal) ↗</a>` : ""}
         ${t.planned_caption ? `<div class="cap">${esc(t.planned_caption)}</div>` : ""}</div>`
       : `<div class="take"><b>${esc(t.name)}</b><div class="cap" style="color:var(--danger)">${esc(t.error || "failed")}</div></div>`).join("");
     return `<div class="card">${head}<div style="margin-top:12px">${takes}</div></div>`;
@@ -379,7 +425,7 @@ async function generate() {
     key: $("#key").value || null, rewrite_caption: $("#rewrite").checked }));
   store.set("lora", lora); store.set("prompt", prompt);
   $("#genBtn").disabled = true;
-  try { await dispatch("generate", "--wait", JSON.stringify(takes)); toast(`${n} take${n > 1 ? "s" : ""} queued in the cloud`); }
+  try { await dispatch("generate", `--wait --variant ${loraVariant(lora)}`, JSON.stringify(takes)); toast(`${n} take${n > 1 ? "s" : ""} queued in the cloud`); }
   catch (e) { toast(e.message, true); } finally { setTimeout(() => $("#genBtn").disabled = false, 3000); }
 }
 async function train() {
@@ -388,6 +434,81 @@ async function train() {
   if (!await ask("Start training?", `${$("#variant").selectedOptions[0].text}, ${ep} epochs. Roughly $${(est * 0.6).toFixed(0)}–${est.toFixed(0)} depending on the GPU. It shuts itself off when done.`, "Train")) return;
   try { await dispatch("train", `--variant ${v} --epochs ${ep} --save-every ${se} --pack ${$("#pack").value}`); toast("Training run requested"); }
   catch (e) { toast(e.message, true); }
+}
+
+// ------------------------------------------------------------- song: encrypted upload -> cloud
+let songKind = "vocal", songCount = 2, songTracks = new Set(["drums", "bass", "keyboard", "synth"]);
+const TRACKS = ["drums", "bass", "keyboard", "synth", "strings", "percussion", "guitar", "fx", "backing_vocals"];
+function b64enc(bytes) { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+async function encryptFile(buf) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(cfg.key), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 200000 }, base,
+    { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, buf));
+  const out = new Uint8Array(28 + ct.length); out.set(salt, 0); out.set(iv, 16); out.set(ct, 28); return out;
+}
+async function uploadEncrypted(bytes, path, progress) {
+  progress(0.35, "Uploading…");
+  const blob = await gh("/git/blobs", { method: "POST", body: JSON.stringify({ content: b64enc(bytes), encoding: "base64" }) });
+  progress(0.8, "Saving…");
+  let parent = null, baseTree = null;
+  try { const ref = await gh("/git/ref/heads/glore-uploads"); parent = ref.object.sha;
+        baseTree = (await gh(`/git/commits/${parent}`)).tree.sha; } catch {}
+  const tree = await gh("/git/trees", { method: "POST", body: JSON.stringify({ ...(baseTree ? { base_tree: baseTree } : {}),
+    tree: [{ path, mode: "100644", type: "blob", sha: blob.sha }] }) });
+  const commit = await gh("/git/commits", { method: "POST", body: JSON.stringify({ message: "GLORE upload (encrypted)", tree: tree.sha,
+    parents: parent ? [parent] : [] }) });
+  if (parent) await gh("/git/refs/heads/glore-uploads", { method: "PATCH", body: JSON.stringify({ sha: commit.sha, force: true }) });
+  else await gh("/git/refs", { method: "POST", body: JSON.stringify({ ref: "refs/heads/glore-uploads", sha: commit.sha }) });
+}
+async function buildSong() {
+  const f = $("#file").files[0];
+  if (!f) return toast("Choose a vocal or a song first", true);
+  if (f.size > 70 * 2 ** 20) return toast("That file is over 70 MB: export an MP3 or a shorter WAV", true);
+  const prompt = $("#songPrompt").value.trim() || $("#songPrompt").placeholder;
+  const lora = $("#songLora").value, seed0 = Math.floor(Math.random() * 1e9);
+  const base = f.name.replace(/\.[^.]+$/, "").slice(0, 28) || "song";
+  const takes = Array.from({ length: songCount }, (_, i) => ({ name: `${base} ${i + 1}`, caption: prompt, lora: lora || undefined,
+    scale: Number($("#songScale").value), seed: seed0 + i, tracks: [...songTracks] }));
+  const bar = $("#upBar"), fill = bar.querySelector("i"), btn = $("#songBtn");
+  const progress = (p, m) => { bar.style.display = "block"; fill.style.width = Math.round(p * 100) + "%"; btn.textContent = m; };
+  btn.disabled = true;
+  try {
+    progress(0.1, "Encrypting…");
+    const enc = await encryptFile(await f.arrayBuffer());
+    const path = `uploads/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;
+    await uploadEncrypted(enc, path, progress);
+    const safeName = f.name.replace(/[^A-Za-z0-9._()-]+/g, "_");
+    let args = `--wait --upload ${path} --name ${safeName} --kind ${songKind} --variant ${loraVariant(lora)}`;
+    if ($("#songBpm").value) args += ` --bpm ${Number($("#songBpm").value)}`;
+    if ($("#songKey").value) args += ` --key ${$("#songKey").value.replace(" ", "_")}`;
+    progress(0.95, "Starting the cloud job…");
+    await dispatch("song", args, JSON.stringify(takes));
+    progress(1, "Build the song");
+    store.set("songLora", lora); store.set("songPrompt", $("#songPrompt").value);
+    toast("Uploaded. Your song is being built in the cloud");
+  } catch (e) { toast(e.message, true); btn.textContent = "Build the song"; }
+  finally { btn.disabled = false; setTimeout(() => bar.style.display = "none", 1500); }
+}
+function initSong() {
+  $("#file").onchange = () => { const f = $("#file").files[0];
+    $("#fileLabel").textContent = f ? `${f.name} · ${(f.size / 2 ** 20).toFixed(1)} MB` : "Tap to choose a vocal or a song";
+    $("#drop").classList.toggle("has", !!f); };
+  $("#kindPills").onclick = (e) => { const k = e.target.dataset.k; if (!k) return; songKind = k;
+    document.querySelectorAll("#kindPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.k === k)); };
+  $("#songCountPills").innerHTML = [1, 2, 3, 4].map((n) => `<span class="pill ${n === songCount ? "on" : ""}" data-n="${n}">${n}</span>`).join("");
+  $("#songCountPills").onclick = (e) => { const n = e.target.dataset.n; if (!n) return; songCount = Number(n);
+    document.querySelectorAll("#songCountPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.n === n)); };
+  $("#trackPills").innerHTML = TRACKS.map((t) => `<span class="pill ${songTracks.has(t) ? "on" : ""}" data-t="${t}">${t.replace("_", " ")}</span>`).join("");
+  $("#trackPills").onclick = (e) => { const t = e.target.dataset.t; if (!t) return;
+    if (songTracks.has(t) && songTracks.size > 1) songTracks.delete(t); else songTracks.add(t);
+    e.target.classList.toggle("on", songTracks.has(t)); };
+  $("#songScale").oninput = () => $("#songScaleVal").textContent = Number($("#songScale").value).toFixed(2);
+  $("#songKey").innerHTML = `<option value="">Detect</option>` + $("#key").innerHTML.replace('<option value="">Any</option>', "");
+  $("#songKey").value = "";
+  $("#songPrompt").value = store.get("songPrompt", "");
+  $("#songBtn").onclick = buildSong;
 }
 
 // ------------------------------------------------------------- boot
@@ -416,7 +537,7 @@ async function connect() {
   start();
 }
 async function start() {
-  show(store.get("view", "create"));
+  show(store.get("view", "song"));
   try { await loadState(); } catch (e) { toast(e.message, true); }
   if (!state) toast("No status yet: tap ↻ to ask the cloud for one");
   pollRuns();
@@ -438,6 +559,7 @@ $("#logoutBtn").onclick = async () => { if (await ask("Disconnect this device?",
   ["token", "key"].forEach(store.del); location.reload(); } };
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && cfg.token) pollRuns(); });
 initForm();
+initSong();
 if (cfg.token && cfg.key) start(); else show("setup");
 </script>
 </body>

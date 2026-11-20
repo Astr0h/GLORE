@@ -526,6 +526,81 @@ def run_generate_job(job: dict, root: Path, ace: Ace, log, status: Status) -> di
     return {"takes": results, "variant": variant, "lm": lm}
 
 
+# ---------------------------------------------------------------- songs: your vocal + a beat built around it
+
+SONG_EXTRAS = ("demucs==4.0.1", "librosa>=0.10.2")
+
+
+def _run_tool(ace: Ace, script: str, args: list[str], log) -> dict:
+    """Run one of GLORE's scripts in ACE's venv; returns its GLORE_RESULT (raises on GLORE_ERROR)."""
+    found: dict = {}
+
+    def on_line(line):
+        if line.startswith("GLORE_RESULT "):
+            found.update(json.loads(line[len("GLORE_RESULT "):]))
+        elif line.startswith("GLORE_ERROR "):
+            found["_error"] = json.loads(line[len("GLORE_ERROR "):]).get("error")
+
+    code, _ = run(ace.py(str(Path(__file__).with_name(script)), *args), ace.dir, ace.env, log, on_line=on_line)
+    if code or "_error" in found or not found:
+        raise RuntimeError(found.get("_error") or f"{script} failed (see log)")
+    return found
+
+
+def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
+    """job: {id, upload (volume key), kind: vocal|song, variant, bpm?, key?,
+             takes: [{name, caption, lora_dir?, trigger?, scale?, seed, tracks?, guidance?}]}
+    Each take: ACE 'complete' writes the backing while hearing your vocal (base/SFT models),
+    then the model's own sung copy is separated out and your real vocal goes on top."""
+    variant = job.get("variant", "xl_sft")
+    ace.ensure(variant, log, status, extras=SONG_EXTRAS)
+    work = root / "glore" / "runs" / job["id"] / "song"
+    work.mkdir(parents=True, exist_ok=True)
+    status.update(phase="preparing", progress=0.05, message="Finding the vocal, BPM and key")
+    pj = work / "prep.json"
+    pj.write_text(json.dumps({"input": str(root / job["upload"]), "kind": job.get("kind", "vocal"),
+                              "work": str(work / "prep")}), encoding="utf-8")
+    a = _run_tool(ace, "glore_song.py", ["prep", str(pj)], log)
+    bpm, key = job.get("bpm") or a["bpm"], job.get("key") or a["key"]
+    inference = VARIANT_INFERENCE[variant]
+    out_dir = root / "outputs" / job["id"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    takes, results = job.get("takes") or [], []
+    for i, t in enumerate(takes):
+        name = re.sub(r"[^A-Za-z0-9 ._()+-]", "", t.get("name") or f"take {i + 1}").strip() or f"take {i + 1}"
+        status.update(phase="generating", progress=0.15 + 0.8 * i / max(1, len(takes)),
+                      message=f"Building {name} around your vocal ({i + 1}/{len(takes)})")
+        tw = work / f"take{i + 1}"
+        tw.mkdir(parents=True, exist_ok=True)
+        lora = ({"path": str(root / t["lora_dir"]), "trigger": t.get("trigger"), "scale": float(t.get("scale", 1.0))}
+                if t.get("lora_dir") else None)
+        gjob = {"ace_dir": str(ace.dir), "out_dir": str(tw), "variant": variant, "caption": t.get("caption", ""),
+                "lora": lora, "bpm": bpm, "key": key, "duration": a["duration"], "seed": int(t.get("seed", -1)),
+                "count": 1, "steps": inference["steps"], "shift": inference["shift"], "offload": False, "lm": None,
+                "mode": "complete", "src_audio": a["vocal"], "tracks": t.get("tracks") or ["drums", "bass", "keyboard", "synth"],
+                "guidance": float(t.get("guidance", 7.0)), "rewrite_caption": False}
+        (tw / "job.json").write_text(json.dumps(gjob), encoding="utf-8")
+        try:
+            g = _run_tool(ace, "glore_generate.py", [str(tw / "job.json")], log)
+            mj = tw / "mix.json"
+            mj.write_text(json.dumps({"take": g["files"][0]["path"], "vocal": a["vocal"], "work": str(tw / "mix"),
+                                      "song_mp3": str(out_dir / f"{name}.mp3"),
+                                      "beat_mp3": str(out_dir / f"{name} (beat).mp3"),
+                                      "vocal_gain_db": t.get("vocal_gain_db", -2), "beat_gain_db": t.get("beat_gain_db", 0)}),
+                          encoding="utf-8")
+            _run_tool(ace, "glore_song.py", ["mix", str(mj)], log)
+            results.append({"name": name, "mp3": f"outputs/{job['id']}/{name}.mp3",
+                            "beat_mp3": f"outputs/{job['id']}/{name} (beat).mp3", "seed": g["files"][0].get("seed"),
+                            "caption": t.get("caption")})
+        except RuntimeError as e:
+            results.append({"name": name, "error": str(e)})
+        shutil.rmtree(tw, ignore_errors=True)
+    if takes and not any("mp3" in r for r in results):
+        raise RuntimeError(results[0].get("error") or "nothing rendered")
+    return {"takes": results, "variant": variant, "bpm": bpm, "key": key, "duration": a["duration"],
+            "kind": job.get("kind", "vocal")}
+
+
 def next_job(queue: Path) -> Path | None:
     jobs = sorted(queue.glob("*.json"), key=lambda p: p.stat().st_mtime)
     return jobs[0] if jobs else None
@@ -598,6 +673,8 @@ def process_job(path: Path, root: Path, ace: Ace, state: dict) -> dict | None:
                 result = run_test_job(job, root)
             elif job["mode"] == "generate":
                 result = run_generate_job(job, root, ace, log, status)
+            elif job["mode"] == "song":
+                result = run_song_job(job, root, ace, log, status)
             else:
                 result = run_train_job(job, root, ace, log, status, lambda: state.get("stop"))
             status.update(phase="done", progress=1.0, message="Done", result=result)

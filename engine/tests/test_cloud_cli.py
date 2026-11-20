@@ -164,3 +164,75 @@ def test_publish_state_needs_the_web_key(cli, monkeypatch, capsys):
     monkeypatch.delenv("GLORE_WEB_KEY", raising=False)
     assert cloud_cli.main(["publish-state"]) == 1
     assert "GLORE_WEB_KEY" in capsys.readouterr().err
+
+
+SONG = r'''
+import json, sys, os, shutil
+what, path = sys.argv[1], sys.argv[2]
+job = json.load(open(path))
+os.makedirs(job["work"], exist_ok=True)
+if what == "prep":
+    v = os.path.join(job["work"], "vocal.wav"); shutil.copy(job["input"], v)
+    print("GLORE_RESULT " + json.dumps({"vocal": v, "bpm": 128.0, "key": "F minor", "duration": 12.5, "kind": job["kind"]}))
+else:
+    for k in ("song_mp3", "beat_mp3"):
+        open(job[k], "wb").write(b"mp3:" + open(job["take"], "rb").read()[:4])
+    print("GLORE_RESULT " + json.dumps({"song_mp3": job["song_mp3"], "beat_mp3": job["beat_mp3"]}))
+'''
+
+
+class SongAce(GenAce):
+    def ensure(self, variant, log, status, extras=()):
+        self.extras = extras
+        status.update(phase="setup", message="pretend install")
+
+    def py(self, *args):
+        if args and str(args[0]).endswith("glore_song.py"):
+            return [sys.executable, "-c", SONG, *args[1:]]
+        return super().py(*args)
+
+
+def encrypt_upload(data: bytes, passphrase: str) -> bytes:
+    import hashlib, os as _os
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt, iv = _os.urandom(16), _os.urandom(12)
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, 200_000, dklen=32)
+    return salt + iv + AESGCM(key).encrypt(iv, data, None)
+
+
+def test_song_from_an_encrypted_upload(cli, tmp_path, monkeypatch):
+    ace = SongAce(tmp_path)
+    cli["rp"].ace = ace
+    monkeypatch.setenv("GLORE_WEB_KEY", "pw")
+    blob = encrypt_upload(b"RIFF-fake-vocal", "pw")
+    taken = []
+    monkeypatch.setattr(cloud_cli, "take_upload", lambda p: (taken.append(p), blob)[1])
+    vol = cli["vol"]
+    vol.put_bytes("loras/house/runX/final/adapter_model.safetensors", b"w")
+    tf = tmp_path / "takes.json"
+    tf.write_text(json.dumps([{"name": "my song 1", "caption": "deep house", "lora": "runX", "seed": 5},
+                              {"name": "my song 2", "caption": "deep house", "seed": 6}]))
+    out = tmp_path / "o"
+    rc = cloud_cli.main(["song", "--upload", "uploads/abc.bin", "--name", "../My Vocal.mp3", "--kind", "vocal",
+                         "--takes", str(tf), "--wait", "--out", str(out), "--timeout-min", "1"])
+    assert rc == 0 and taken == ["uploads/abc.bin"]
+    assert ace.extras == glore_pod.SONG_EXTRAS
+    res = json.loads((out / "result.json").read_text())["result"]
+    assert res["bpm"] == 128.0 and res["key"] == "F minor" and len(res["takes"]) == 2
+    assert sorted(p.name for p in out.glob("*.mp3")) == ["my song 1 (beat).mp3", "my song 1.mp3",
+                                                         "my song 2 (beat).mp3", "my song 2.mp3"]
+    # the decrypted vocal sits on the volume, with a safe name
+    ups = vol.list_keys("uploads/")
+    assert len(ups) == 1 and ups[0].endswith("/My Vocal.mp3")
+    assert vol.get_bytes(ups[0]) == b"RIFF-fake-vocal"
+    # generation used ACE 'complete' around the vocal, with ACE's own instruction format available
+    seen = [json.loads(p.read_text()) for p in (tmp_path / "ace").rglob("seen.json")]
+    assert not seen or all(s["mode"] == "complete" for s in seen)
+
+
+def test_decrypt_upload_rejects_the_wrong_key():
+    from cryptography.exceptions import InvalidTag
+    blob = encrypt_upload(b"secret", "right")
+    assert cloud_cli.decrypt_upload(blob, "right") == b"secret"
+    with pytest.raises(InvalidTag):
+        cloud_cli.decrypt_upload(blob, "wrong")

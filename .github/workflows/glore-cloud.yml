@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "status | check | du | grow | train | generate | fetch | loras | stop  (every run also refreshes GLORE Web)"
+        description: "status | check | du | grow | train | generate | song | fetch | loras | log | stop  (every run also refreshes GLORE Web)"
         required: true
         default: status
       args:
@@ -17,7 +17,7 @@ on:
         required: false
         default: ""
       takes:
-        description: "generate: JSON list of takes [{name, caption, lora?, scale?, seed, duration, bpm, key}]"
+        description: "generate / song: JSON list of takes [{name, caption, lora?, scale?, seed, duration, bpm, key}]"
         required: false
         default: ""
 
@@ -54,6 +54,7 @@ jobs:
         run: pip install --quiet "boto3>=1.35" "cryptography>=42"
       - name: Run
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           CMD: ${{ inputs.command }}
           ARGS: ${{ inputs.args }}
           TAKES: ${{ inputs.takes }}
@@ -61,7 +62,7 @@ jobs:
           set -eo pipefail
           export GLORE_HOME="$RUNNER_TEMP/glore-home"
           extra=()
-          if [ "$CMD" = "generate" ]; then
+          if [ "$CMD" = "generate" ] || [ "$CMD" = "song" ]; then
             printf '%s' "$TAKES" > "$RUNNER_TEMP/takes.json"
             extra=(--takes "$RUNNER_TEMP/takes.json" --out "$GITHUB_WORKSPACE/out")
           fi
@@ -79,7 +80,7 @@ jobs:
           git -c user.name="glore-bot" -c user.email="glore-bot@users.noreply.github.com" commit -qm "GLORE state"
           git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" glore-state
       - name: Keep the takes
-        if: always() && (inputs.command == 'generate' || inputs.command == 'fetch')
+        if: always() && (inputs.command == 'generate' || inputs.command == 'song' || inputs.command == 'fetch')
         uses: actions/upload-artifact@v4
         with:
           name: glore-takes

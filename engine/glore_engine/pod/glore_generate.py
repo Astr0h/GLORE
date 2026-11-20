@@ -121,7 +121,8 @@ def main(job_path: str) -> int:
     )
     if job.get("mode") == "complete":
         # Build the other instruments around an existing part (e.g. your vocal). Base model only.
-        tracks = ", ".join(job.get("tracks") or ["drums", "bass", "keyboard", "synth"])
+        # ACE's own wording (task_utils.generate_instruction): upper-case track names joined by " | "
+        tracks = " | ".join(t.upper() for t in (job.get("tracks") or ["drums", "bass", "keyboard", "synth"]))
         params = GenerationParams(task_type="complete", src_audio=job["src_audio"],
                                   instruction=f"Complete the input track with {tracks}:",
                                   guidance_scale=float(job.get("guidance", 7.0)),

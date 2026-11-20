@@ -108,7 +108,7 @@ def _start_or_reuse(mgr: CloudManager, kind: str, hard_cap_s: float, idle_min: f
 
 def sync_scripts(vol: cloud.Volume) -> None:
     pod_dir = Path(glore_pod.__file__).parent
-    for name in ("glore_pod.py", "glore_label.py", "glore_generate.py", "pod_start.sh"):
+    for name in ("glore_pod.py", "glore_label.py", "glore_generate.py", "glore_song.py", "pod_start.sh"):
         vol.put_bytes(f"glore/{name}", (pod_dir / name).read_bytes().replace(b"\r\n", b"\n"))
 
 
@@ -187,6 +187,83 @@ def cmd_generate(a) -> dict:
     return {"job": job_id}
 
 
+# ---------------------------------------------------------------- uploads from GLORE Web
+
+UPLOAD_BRANCH = "glore-uploads"
+
+
+def decrypt_upload(blob: bytes, passphrase: str) -> bytes:
+    """GLORE Web encrypts files before they touch the (public) repo: salt(16) | iv(12) | AES-GCM ciphertext."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt, iv, ct = blob[:16], blob[16:28], blob[28:]
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, 200_000, dklen=32)
+    return AESGCM(key).decrypt(iv, ct, None)
+
+
+def _github(method: str, path: str, accept: str = "application/vnd.github+json", body: dict | None = None):
+    import urllib.request
+    repo, token = os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GITHUB_TOKEN")
+    if not (repo and token):
+        raise CloudError("GITHUB_REPOSITORY / GITHUB_TOKEN missing (run this from the GitHub workflow)")
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", method=method,
+                                 data=json.dumps(body).encode() if body else None,
+                                 headers={"Authorization": f"Bearer {token}", "Accept": accept,
+                                          "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "GLORE"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return r.read()
+
+
+def take_upload(path: str) -> bytes:
+    """Fetch an encrypted upload from the glore-uploads branch, then delete it there."""
+    raw = _github("GET", f"/contents/{path}?ref={UPLOAD_BRANCH}", accept="application/vnd.github.raw+json")
+    try:
+        meta = json.loads(_github("GET", f"/contents/{path}?ref={UPLOAD_BRANCH}"))
+        _github("DELETE", f"/contents/{path}", body={"message": "GLORE: upload taken", "sha": meta["sha"],
+                                                     "branch": UPLOAD_BRANCH})
+    except Exception as e:  # leaving it there is harmless: it's encrypted
+        print(f"  (couldn't tidy the upload away: {e})")
+    return raw
+
+
+def cmd_song(a) -> dict:
+    """Your vocal (or a whole song, vocal taken out) -> beats built around it, mixed, as MP3s."""
+    key = os.environ.get("GLORE_WEB_KEY", "")
+    if a.upload and not key:
+        raise CloudError("GLORE_WEB_KEY is needed to decrypt uploads")
+    takes = json.loads(Path(a.takes).read_text(encoding="utf-8")) if a.takes else []
+    if not takes:
+        raise CloudError("No takes given")
+    if a.kind not in ("vocal", "song"):
+        raise CloudError("kind must be vocal or song")
+    mgr = manager()
+    settle_ledger(mgr)
+    vol = mgr.volume()
+    job_id = uuid.uuid4().hex[:10]
+    if a.upload:
+        data = decrypt_upload(take_upload(a.upload), key)
+        safe = "".join(c for c in Path(a.name or "upload").name if c.isalnum() or c in " ._-()").strip() or "upload"
+        src = f"uploads/{job_id}/{safe}"
+        vol.put_bytes(src, data)
+        print(f"  uploaded {len(data) / 2 ** 20:.1f} MB to {src}")
+    elif a.source:
+        src = a.source
+    else:
+        raise CloudError("Give --upload (from GLORE Web) or --source (a file already on the volume)")
+    for t in takes:
+        if t.get("lora"):
+            t["lora_dir"] = resolve_lora(vol, t.get("pack", "house"), t["lora"])
+            t.setdefault("trigger", f"glore_{t.get('pack', 'house')}")
+    sync_scripts(vol)
+    job = {"id": job_id, "mode": "song", "upload": src, "kind": a.kind, "variant": a.variant,
+           "bpm": a.bpm, "key": (a.key or "").replace("_", " ") or None, "takes": takes}
+    vol.put_bytes(f"glore/queue/{job_id}.json", json.dumps(job).encode())
+    row = _start_or_reuse(mgr, "train", a.hard_cap_hours * 3600, 10, {"job": job_id})
+    print(json.dumps({"job": job_id, "pod": row["pod_id"], "gpu": row.get("gpu"), "takes": len(takes)}, indent=2))
+    if a.wait:
+        return cmd_fetch(argparse.Namespace(job=job_id, out=a.out, wait=True, timeout_min=a.timeout_min))
+    return {"job": job_id}
+
+
 def job_status(vol: cloud.Volume, job_id: str) -> dict:
     raw = vol.get_bytes(f"glore/runs/{job_id}/status.json")
     if raw:
@@ -210,10 +287,11 @@ def cmd_fetch(a) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     got = []
     for t in (st.get("result") or {}).get("takes", []):
-        if t.get("mp3"):
-            dest = out / Path(t["mp3"]).name
-            vol.download(t["mp3"], dest)
-            got.append(str(dest))
+        for k in ("mp3", "beat_mp3"):
+            if t.get(k):
+                dest = out / Path(t[k]).name
+                vol.download(t[k], dest)
+                got.append(str(dest))
     (out / "result.json").write_text(json.dumps(st, indent=2), encoding="utf-8")
     print(json.dumps({"phase": st.get("phase"), "files": got, "error": st.get("error")}, indent=2))
     if st.get("phase") == "error":
@@ -337,15 +415,20 @@ def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> di
         row = {k: st.get(k) for k in ("job", "mode", "phase", "message", "progress", "epoch", "epochs", "loss",
                                        "eta_s", "started", "heartbeat", "gpu", "error")}
         res = st.get("result") or {}
-        if st.get("mode") == "generate":
+        if st.get("mode") in ("generate", "song"):
+            link = lambda k: vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": k},
+                                                           ExpiresIn=link_days * 86400)
             takes = []
             for t in res.get("takes", []):
                 t = dict(t)
                 if t.get("mp3"):
-                    t["url"] = vol.s3.generate_presigned_url(
-                        "get_object", Params={"Bucket": vol.bucket, "Key": t["mp3"]}, ExpiresIn=link_days * 86400)
+                    t["url"] = link(t["mp3"])
+                if t.get("beat_mp3"):
+                    t["beat_url"] = link(t["beat_mp3"])
                 takes.append(t)
             row["takes"] = takes
+            if st.get("mode") == "song":
+                row.update({k: res.get(k) for k in ("bpm", "key", "duration", "kind")})
         elif st.get("mode") == "train":
             row["run_id"] = res.get("lora_dir", "").split("/")[2] if res.get("lora_dir") else None
         jobs.append(row)
@@ -439,6 +522,19 @@ def main(argv: list[str] | None = None) -> int:
     lo.add_argument("--pack", default="house")
     sub.add_parser("stop")
     sub.add_parser("check")
+    so = sub.add_parser("song")
+    so.add_argument("--upload", help="path in the glore-uploads branch (from GLORE Web)")
+    so.add_argument("--source", help="or: a file already on the volume")
+    so.add_argument("--name", default="")
+    so.add_argument("--kind", default="vocal", help="vocal (a cappella) or song (vocal gets separated out)")
+    so.add_argument("--takes", required=True)
+    so.add_argument("--variant", default="xl_sft")
+    so.add_argument("--bpm", type=float)
+    so.add_argument("--key")
+    so.add_argument("--hard-cap-hours", type=float, default=1.5)
+    so.add_argument("--wait", action="store_true")
+    so.add_argument("--out", default="out")
+    so.add_argument("--timeout-min", type=float, default=100)
     lg = sub.add_parser("log")
     lg.add_argument("--job", required=True)
     lg.add_argument("--bytes", default=12000)
@@ -452,7 +548,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
-         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log}[a.cmd](a)
+         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

@@ -416,6 +416,33 @@ def process_pending_links(vol: cloud.Volume, report=print) -> list[dict]:
     return done
 
 
+def cmd_probe(a) -> dict:
+    """Fetch a stored file the way a phone's audio player does (presigned link, Range request)."""
+    import urllib.error
+    import urllib.request
+    vol = manager().volume()
+    key = a.key or next((k for k in reversed(vol.list_keys("outputs/")) if k.endswith(".mp3")), None)
+    print("key:", key)
+    out = {}
+    for days in (a.days, 1, 600 / 86400):
+        url = vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": key},
+                                            ExpiresIn=int(days * 86400))
+        for hdrs in ({}, {"Range": "bytes=0-1"}, {"Range": "bytes=0-", "Origin": "https://astr0h.github.io"}):
+            req = urllib.request.Request(url, headers=hdrs)
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    res = f"{r.status} type={r.headers.get('Content-Type')} len={r.headers.get('Content-Length')} " \
+                          f"range={r.headers.get('Content-Range')} accept-ranges={r.headers.get('Accept-Ranges')} " \
+                          f"cors={r.headers.get('Access-Control-Allow-Origin')}"
+            except urllib.error.HTTPError as e:
+                res = f"HTTP {e.code}: {e.read()[:300]!r}"
+            except Exception as e:
+                res = f"failed: {e}"
+            print(f"expires {days:.3g}d {hdrs}: {res}")
+            out[f"{days}-{hdrs}"] = res
+    return out
+
+
 def cmd_queue(a) -> dict:
     """Jobs waiting for a pod. --drop <id> (or 'all') removes them."""
     vol = manager().volume()
@@ -818,6 +845,9 @@ def main(argv: list[str] | None = None) -> int:
     to.add_argument("--set", action="append", help="key=value (repeat)")
     to.add_argument("--wait", action="store_true")
     to.add_argument("--timeout-min", type=float, default=40)
+    pr = sub.add_parser("probe")
+    pr.add_argument("--key")
+    pr.add_argument("--days", type=float, default=7)
     qu = sub.add_parser("queue")
     qu.add_argument("--drop")
     lb = sub.add_parser("library")
@@ -859,7 +889,7 @@ def main(argv: list[str] | None = None) -> int:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
          "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
                 "import": cmd_import, "link": cmd_link, "library": cmd_library,
-                "tool": cmd_tool, "queue": cmd_queue}[a.cmd](a)
+                "tool": cmd_tool, "queue": cmd_queue, "probe": cmd_probe}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

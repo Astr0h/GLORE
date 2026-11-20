@@ -52,7 +52,7 @@ jobs:
           python-version: "3.11"
       - name: Install the few packages the cloud CLI needs
         run: |
-          pip install --quiet "boto3>=1.35" "cryptography>=42"
+          pip install --quiet "boto3>=1.35" "cryptography>=42" imageio-ffmpeg
           if [ "${{ inputs.command }}" = "link" ]; then pip install --quiet -U "yt-dlp[default]" imageio-ffmpeg; fi
       - name: Run
         env:

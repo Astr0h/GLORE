@@ -40,7 +40,6 @@ jobs:
       GLORE_DATACENTER: ${{ secrets.GLORE_DATACENTER }}
       GLORE_GPU: ${{ secrets.GLORE_GPU }}
       GLORE_MONTHLY_LIMIT: ${{ secrets.GLORE_MONTHLY_LIMIT }}
-      GLORE_HOME: ${{ runner.temp }}/glore-home
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,6 +54,7 @@ jobs:
           TAKES: ${{ inputs.takes }}
         run: |
           set -eo pipefail
+          export GLORE_HOME="$RUNNER_TEMP/glore-home"
           extra=()
           if [ "$CMD" = "generate" ]; then
             printf '%s' "$TAKES" > "$RUNNER_TEMP/takes.json"

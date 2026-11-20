@@ -653,7 +653,26 @@ function initSong() {
 let libKind = "song", libFilter = "", addMode = "file", songSrc = "upload", recentTools = {};
 const KIND_LABEL = { vocal: "vocal", song: "song", beat: "beat", stem: "stem", chops: "chops", other: "other" };
 const TOOL_WORD = { stems: "Splitting into stems", clean: "Cleaning", analyse: "Finding BPM and key", lock: "Stretching", chops: "Chopping" };
-const lib = () => (state && state.library) || [];
+let deleting = JSON.parse(store.get("deleting", "{}"));  // id -> time tapped; hidden until the cloud confirms
+const lib = () => {
+  const all = (state && state.library) || [], ids = new Set(all.map((i) => i.id));
+  let changed = false;
+  for (const [id, t] of Object.entries(deleting))  // confirmed gone, or the request is long stale
+    if (!ids.has(id) || Date.now() - t > 20 * 60e3) { delete deleting[id]; changed = true; }
+  if (changed) store.set("deleting", JSON.stringify(deleting));
+  return all.filter((i) => !deleting[i.id]);
+};
+let deleteBatch = [], deleteTimer = null;
+function queueDelete(item) {
+  deleting[item.id] = Date.now(); store.set("deleting", JSON.stringify(deleting));
+  deleteBatch.push(item.id); renderLibrary();
+  clearTimeout(deleteTimer);  // taps within a few seconds go to the cloud as one request
+  deleteTimer = setTimeout(async () => {
+    const ids = deleteBatch.splice(0);
+    try { await dispatch("library", `--delete ${ids.join(",")}`); }
+    catch (e) { ids.forEach((id) => delete deleting[id]); store.set("deleting", JSON.stringify(deleting)); renderLibrary(); toast(e.message, true); }
+  }, 2500);
+}
 const fmtLen = (s) => !s ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 const argName = (n) => n.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._()-]+/g, "_").slice(0, 70) || "audio";
 
@@ -731,7 +750,7 @@ async function libAction(a, item) {
   }
   if (a === "delete") {
     if (await ask("Delete from your library?", `${item.name} is removed from the cloud volume. This can't be undone.`, "Delete"))
-      { await dispatch("library", `--delete ${item.id}`); toast("Deleting…"); }
+      { queueDelete(item); toast(`Deleted ${item.name}`); }
     return;
   }
   if (a === "analyse") return runTool("analyse", item);

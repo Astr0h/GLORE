@@ -25,9 +25,8 @@ permissions:
   contents: write   # to publish the encrypted state file GLORE Web reads (branch glore-state)
   actions: read
 
-concurrency:
-  group: glore-cloud-${{ inputs.command }}
-  cancel-in-progress: false
+# No concurrency group on purpose: GitHub keeps only one waiting run per group and cancels the rest,
+# which silently dropped quick taps in GLORE Web (several deletes, a tool then a song...).
 
 jobs:
   run:

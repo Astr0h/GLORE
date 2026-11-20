@@ -469,12 +469,19 @@ def cmd_queue(a) -> dict:
 
 def cmd_library(a) -> dict:
     vol = manager().volume()
-    if a.delete:
-        item = library_get(vol, a.delete)
-        for k in vol.list_keys(f"{LIB}/{item['id']}/"):
-            vol.delete(k)
-        print(f"Deleted {item['name']}")
-        return {"deleted": item["id"]}
+    if a.delete:  # one id or several, comma-separated
+        gone = []
+        for item_id in [i for i in a.delete.split(",") if i]:
+            try:
+                item = library_get(vol, item_id)
+            except CloudError:
+                print(f"Already gone: {item_id}")
+                continue
+            for k in vol.list_keys(f"{LIB}/{item['id']}/"):
+                vol.delete(k)
+            print(f"Deleted {item['name']}")
+            gone.append(item["id"])
+        return {"deleted": gone}
     items = library_items(vol)
     for i in items:
         print(f"{i['id']}  {i['kind']:<6} {i.get('duration', 0):6.0f}s  {i['name']}")

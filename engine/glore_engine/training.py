@@ -161,10 +161,7 @@ def sync_scripts(vol: cloud.Volume) -> None:
 
 def train_params(n_tracks: int, epochs: int | None = None, rank: int | None = None,
                  save_every: int | None = None) -> dict:
-    rank = int(rank or 64)
-    return {"epochs": int(epochs or glore_pod.default_epochs(n_tracks)), "rank": rank, "alpha": rank * 2,
-            "lr": 1e-4, "batch_size": 1, "grad_accum": 4, "save_every": int(save_every or 10), "log_every": 10,
-            "optimizer": "adamw", "offload_encoder": False}
+    return glore_pod.train_params(n_tracks, epochs, rank, save_every)
 
 
 # ---------------------------------------------------------------- runs (survive an app restart)

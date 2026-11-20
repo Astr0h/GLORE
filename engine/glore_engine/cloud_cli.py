@@ -107,9 +107,9 @@ def _start_or_reuse(mgr: CloudManager, kind: str, hard_cap_s: float, idle_min: f
 
 
 def sync_scripts(vol: cloud.Volume) -> None:
-    from .training import POD_DIR
+    pod_dir = Path(glore_pod.__file__).parent
     for name in ("glore_pod.py", "glore_label.py", "glore_generate.py", "pod_start.sh"):
-        vol.put_bytes(f"glore/{name}", (POD_DIR / name).read_bytes().replace(b"\r\n", b"\n"))
+        vol.put_bytes(f"glore/{name}", (pod_dir / name).read_bytes().replace(b"\r\n", b"\n"))
 
 
 # ---------------------------------------------------------------- commands
@@ -127,8 +127,7 @@ def cmd_train(a) -> dict:
     n = len(doc.get("samples", []))
     audio = (doc.get("metadata") or {}).get("audio", "prepared")
     dhash = hashlib.sha256(raw).hexdigest()[:12]
-    from .training import train_params
-    params = train_params(n, a.epochs, a.rank, a.save_every)
+    params = glore_pod.train_params(n, a.epochs, a.rank, a.save_every)
     run_id = (f"{dhash}-{a.variant}-r{params['rank']}-e{params['epochs']}"
               + ("-full" if audio == "full" else "") + ("-cap" if a.autolabel else ""))
     if vol.list_keys(f"loras/{a.pack}/{run_id}/final/"):

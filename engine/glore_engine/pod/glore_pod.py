@@ -92,6 +92,12 @@ def default_epochs(n_tracks: int) -> int:
     return 80
 
 
+def cli_variant(variant: str) -> str:
+    """What to pass as Side-Step's --model-variant. Its trainer only knows turbo/base/sft by name
+    (the preprocessor knows the xl_* aliases too); both accept the model's folder name."""
+    return VARIANT_DIRS[variant] if variant.startswith("xl_") else variant
+
+
 def train_params(n_tracks: int, epochs: int | None = None, rank: int | None = None,
                  save_every: int | None = None) -> dict:
     rank = int(rank or 64)
@@ -264,7 +270,7 @@ class Ace:
         tensor_dir.mkdir(parents=True, exist_ok=True)
         status.update(phase="preprocessing", message="Encoding tracks for training")
         cmd = self.train_py("--plain", "--yes", "fixed",
-                            "--checkpoint-dir", str(self.ckpt), "--model-variant", variant,
+                            "--checkpoint-dir", str(self.ckpt), "--model-variant", cli_variant(variant),
                             "--preprocess", "--dataset-json", str(dataset_json),
                       "--tensor-output", str(tensor_dir), "--max-duration", str(max_duration),
                       # required by the parser even though preprocessing ignores them
@@ -296,7 +302,7 @@ class Ace:
     def train_cmd(self, tensor_dir: Path, out_dir: Path, variant: str, p: dict) -> list[str]:
         inf = VARIANT_INFERENCE[variant]
         cmd = self.train_py("--plain", "--yes", "fixed",
-                            "--checkpoint-dir", str(self.ckpt), "--model-variant", variant,
+                            "--checkpoint-dir", str(self.ckpt), "--model-variant", cli_variant(variant),
                             "--dataset-dir", str(tensor_dir), "--output-dir", str(out_dir),
                       "--epochs", str(p["epochs"]), "--lr", str(p.get("lr", 1e-4)),
                       "--rank", str(p.get("rank", 64)), "--alpha", str(p.get("alpha", 128)),

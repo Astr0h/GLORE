@@ -75,7 +75,7 @@ def test_train_from_the_volume_without_a_pc(cli, capsys):
     assert st["phase"] == "done", st
     job = json.loads(cli["vol"].get_bytes(f"glore/runs/{jid}/job.json"))
     assert job["variant"] == "xl_sft" and job["tensor_dir"].endswith("-xl_sft") and job["autolabel"]
-    assert "--model-variant" in cli["ace"].cmds[-1] and "xl_sft" in cli["ace"].cmds[-1]
+    assert "--model-variant" in cli["ace"].cmds[-1] and "acestep-v15-xl-sft" in cli["ace"].cmds[-1]
     assert job["run_id"].endswith("-xl_sft-r64-e4-full-cap")
     # the ledger lives on the volume, so spend survives the runner going away
     rows = json.loads(cli["vol"].get_bytes(cloud_cli.LEDGER_KEY))

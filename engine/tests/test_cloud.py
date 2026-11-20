@@ -611,3 +611,11 @@ def test_spotify_title_tag_and_embed_fallbacks():
     assert linkimport.parse_spotify(page) == ("Mama, I'm Sorry", "Lil Uzi Vert")
     embed = '{"type":"track","name":"Mama, I\\u2019m Sorry","uri":"x","artists":[{"name":"Lil Uzi Vert","uri":"y"}]}'
     assert linkimport.parse_spotify(embed) == ("Mama, I’m Sorry", "Lil Uzi Vert")
+
+
+def test_xl_variants_pass_their_folder_name_to_side_step(tmp_path):
+    ace = glore_pod.Ace(tmp_path / "ace", ["uv"], {})
+    cmd = ace.train_cmd(tmp_path / "t", tmp_path / "o", "xl_sft", glore_pod.train_params(10, 4))
+    assert cmd[cmd.index("--model-variant") + 1] == "acestep-v15-xl-sft"
+    cmd = ace.train_cmd(tmp_path / "t", tmp_path / "o", "turbo", glore_pod.train_params(10, 4))
+    assert cmd[cmd.index("--model-variant") + 1] == "turbo"

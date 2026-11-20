@@ -422,12 +422,23 @@ def cmd_probe(a) -> dict:
     import urllib.request
     vol = manager().volume()
     key = a.key or next((k for k in reversed(vol.list_keys("outputs/")) if k.endswith(".mp3")), None)
+    keys = [key] + [k for k in vol.list_keys("glore/")[:200] if k.endswith("glore_pod.py")][:1]
+    print("keys:", keys)
+    for key in keys:
+        _probe_key(vol, key, a.days)
+    return {}
+
+
+def _probe_key(vol, key, days0):
+    import urllib.error
+    import urllib.request
     print("key:", key)
     out = {}
-    for days in (a.days, 1, 600 / 86400):
+    for days in (days0, 600 / 86400):
         url = vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": key},
                                             ExpiresIn=int(days * 86400))
-        for hdrs in ({}, {"Range": "bytes=0-1"}, {"Range": "bytes=0-", "Origin": "https://astr0h.github.io"}):
+        ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"}
+        for hdrs in ({**ua}, {**ua, "Range": "bytes=0-1"}, {**ua, "Range": "bytes=0-", "Origin": "https://astr0h.github.io"}):
             req = urllib.request.Request(url, headers=hdrs)
             try:
                 with urllib.request.urlopen(req, timeout=20) as r:

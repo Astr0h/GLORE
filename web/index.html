@@ -185,7 +185,7 @@ a { color: var(--accent); }
     <div class="card">
       <div class="row">
         <div><label>Model</label><select id="variant">
-          <option value="xl_sft">XL-SFT (best, cloud)</option><option value="sft">SFT</option><option value="turbo">Turbo (fast)</option></select></div>
+          <option value="xl_sft">XL-SFT (best)</option><option value="sft">SFT</option><option value="turbo">Turbo (fast)</option></select></div>
         <div><label>Pack</label><select id="pack"><option value="house">House</option></select></div>
       </div>
       <div class="row">
@@ -305,7 +305,7 @@ function render() {
   renderLoras(); renderTakes(); renderTrain(); renderCloud(); renderRuns();
 }
 function renderLoras() {
-  const sel = $("#lora"), keep = sel.value || store.get("lora", "");
+  const sel = $("#lora"), keep = sel.value || store.get("lora", null);
   const opts = [`<option value="">No LoRA (plain model)</option>`];
   const L = (state && state.loras) || {};
   Object.keys(L).sort().reverse().forEach((run) => {
@@ -315,7 +315,7 @@ function renderLoras() {
       opts.push(`<option value="${esc(v)}">${esc(label)} · ${p === "final" ? "final" : "epoch " + p.slice(1)} · ${esc(run.slice(0, 6))}</option>`); });
   });
   sel.innerHTML = opts.join("");
-  if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  if (keep !== null && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
   else { const xl = [...sel.options].find((o) => o.value.includes("xl_sft") && !o.value.includes("@")); if (xl) sel.value = xl.value; }
 }
 function statusBadge(phase) { const p = phase || "unknown"; return `<span class="status ${esc(p)}">${["done", "error", "stopped"].includes(p) ? "" : '<span class="dot on"></span>'}${esc(p)}</span>`; }

@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -684,6 +687,20 @@ def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | 
         for job_id, run in training.pending_runs().items():
             _cloud_job(f"train:{run['pack']}", "train_lora",
                        lambda r, j=job_id: training.follow(j, app.state.cloud, r))
+        threading.Thread(target=_link_helper, daemon=True, name="glore-links").start()
+
+    def _link_helper():
+        """GLORE Web can't download from YouTube (it blocks cloud servers), so links pasted on your phone wait
+        on the cloud volume; while GLORE runs on this PC it fetches them at home and uploads them."""
+        from . import cloud_cli
+        log = logging.getLogger("glore.links")
+        while True:
+            try:
+                vol = app.state.cloud.volume()
+                cloud_cli.process_pending_links(vol, report=log.info)
+            except Exception as e:  # offline, no settings yet, ...: just try again later
+                log.debug("link helper: %s", e)
+            time.sleep(60)
 
     if resume_cloud:
         _resume_cloud()

@@ -196,7 +196,7 @@ class Ace:
         both ACE-Step and our data: /workspace on the pod, %APPDATA%/GLORE on the PC."""
         return Path(os.path.commonpath([str(Path(x).resolve()) for x in (self.dir, *paths)]))
 
-    def ensure(self, variant: str, log, status: Status, extras: tuple[str, ...] = ()) -> None:
+    def ensure(self, variant: str, log, status: Status, extras: tuple[str, ...] = (), models: bool = True) -> None:
         marker = self.dir / ".glore_ready"
         if not (marker.exists() and marker.read_text().strip() == ACE_COMMIT):
             status.update(phase="setup", message="Installing ACE-Step 1.5 (first run only, ~5–10 min)")
@@ -213,13 +213,27 @@ class Ace:
             if code:
                 raise RuntimeError("Installing ACE-Step's packages failed (see log)")
             marker.write_text(ACE_COMMIT)
+        missing = []
         for pkg in extras:
             mod = pkg.split("[")[0].split(">")[0].split("=")[0].replace("-", "_")
             code, _ = run(self.py("-c", f"import {mod}"), self.dir, self.env, log)
             if code:
-                status.update(message=f"Installing {pkg}")
-                run([*self.uv, "pip", "install", "--python", str(self.venv_python()), pkg], self.dir, self.env, log)
-        self.ensure_models(variant, log, status)
+                missing.append(pkg)
+        if missing:
+            status.update(message=f"Installing {', '.join(m.split('=')[0].split('>')[0] for m in missing)} (first time only)")
+            pins = []  # never let an extra drag ACE's torch to another version
+            for mod in ("torch", "torchaudio"):
+                found = {}
+                run(self.py("-c", f"import {mod}; print('VER', {mod}.__version__)"), self.dir, self.env, log,
+                    on_line=lambda l, f=found: f.update(v=l.split()[1]) if l.startswith("VER ") else None)
+                if found.get("v"):
+                    pins.append(f"{mod}=={found['v'].split('+')[0]}")
+            code, _ = run([*self.uv, "pip", "install", "--python", str(self.venv_python()), *missing, *pins],
+                          self.dir, self.env, log)
+            if code:
+                raise RuntimeError(f"Installing {', '.join(missing)} failed (see log)")
+        if models:
+            self.ensure_models(variant, log, status)
 
     def venv_python(self) -> Path:
         return self.dir / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -528,7 +542,41 @@ def run_generate_job(job: dict, root: Path, ace: Ace, log, status: Status) -> di
 
 # ---------------------------------------------------------------- songs: your vocal + a beat built around it
 
-SONG_EXTRAS = ("demucs==4.0.1", "librosa>=0.10.2")
+SONG_EXTRAS = ("demucs==4.0.1", "librosa>=0.10.2", "pedalboard>=0.9.8", "soundfile>=0.12")
+CLEAN_EXTRAS = ("audio-separator[gpu]>=0.30",)
+
+
+def _tool(ace: Ace, op: str, root: Path, work: Path, log, item: dict | None = None, params: dict | None = None) -> dict:
+    work.mkdir(parents=True, exist_ok=True)
+    jf = work / f"{op}.json"
+    jf.write_text(json.dumps({"root": str(root), "work": str(work), "item": item or {}, "params": params or {}}),
+                  encoding="utf-8")
+    return _run_tool(ace, "glore_tools.py", [op, str(jf)], log)
+
+
+def library_item(root: Path, item_id: str) -> dict:
+    f = root / "library" / item_id / "item.json"
+    if not f.exists():
+        raise RuntimeError(f"That file isn't in the library any more ({item_id})")
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
+TOOL_LABELS = {"stems": "Splitting into stems", "clean": "Cleaning the vocal", "analyse": "Finding BPM and key",
+               "lock": "Stretching to the new BPM", "chops": "Chopping the vocal"}
+
+
+def run_tool_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
+    """job: {id, op, item (library id), params}"""
+    op = job["op"]
+    ace.ensure("turbo", log, status, extras=SONG_EXTRAS + (CLEAN_EXTRAS if op == "clean" else ()), models=False)
+    item = library_item(root, job["item"])
+    status.update(phase="working", progress=0.2, message=f"{TOOL_LABELS.get(op, op)}: {item['name']}")
+    work = root / "glore" / "runs" / job["id"] / "tool"
+    try:
+        res = _tool(ace, op, root, work, log, item, job.get("params"))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return {"op": op, "item": item["id"], **res}
 
 
 def _run_tool(ace: Ace, script: str, args: list[str], log) -> dict:
@@ -557,8 +605,9 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
     work = root / "glore" / "runs" / job["id"] / "song"
     work.mkdir(parents=True, exist_ok=True)
     status.update(phase="preparing", progress=0.05, message="Finding the vocal, BPM and key")
+    src = job.get("upload") or library_item(root, job["item"])["file"]
     pj = work / "prep.json"
-    pj.write_text(json.dumps({"input": str(root / job["upload"]), "kind": job.get("kind", "vocal"),
+    pj.write_text(json.dumps({"input": str(root / src), "kind": job.get("kind", "vocal"),
                               "work": str(work / "prep")}), encoding="utf-8")
     a = _run_tool(ace, "glore_song.py", ["prep", str(pj)], log)
     bpm, key = job.get("bpm") or a["bpm"], job.get("key") or a["key"]
@@ -566,6 +615,8 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
     out_dir = root / "outputs" / job["id"]
     out_dir.mkdir(parents=True, exist_ok=True)
     takes, results = job.get("takes") or [], []
+    mixp = {k: job[k] for k in ("fx", "reverb", "delay", "chops", "chops_density", "vocal_db", "beat_db", "chops_db",
+                                 "stems") if job.get(k) is not None}
     for i, t in enumerate(takes):
         name = re.sub(r"[^A-Za-z0-9 ._()+-]", "", t.get("name") or f"take {i + 1}").strip() or f"take {i + 1}"
         status.update(phase="generating", progress=0.15 + 0.8 * i / max(1, len(takes)),
@@ -582,16 +633,14 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
         (tw / "job.json").write_text(json.dumps(gjob), encoding="utf-8")
         try:
             g = _run_tool(ace, "glore_generate.py", [str(tw / "job.json")], log)
-            mj = tw / "mix.json"
-            mj.write_text(json.dumps({"take": g["files"][0]["path"], "vocal": a["vocal"], "work": str(tw / "mix"),
-                                      "song_mp3": str(out_dir / f"{name}.mp3"),
-                                      "beat_mp3": str(out_dir / f"{name} (beat).mp3"),
-                                      "vocal_gain_db": t.get("vocal_gain_db", -2), "beat_gain_db": t.get("beat_gain_db", 0)}),
-                          encoding="utf-8")
-            _run_tool(ace, "glore_song.py", ["mix", str(mj)], log)
-            results.append({"name": name, "mp3": f"outputs/{job['id']}/{name}.mp3",
-                            "beat_mp3": f"outputs/{job['id']}/{name} (beat).mp3", "seed": g["files"][0].get("seed"),
-                            "caption": t.get("caption")})
+            status.update(message=f"Mixing {name}: your vocal, FX{', chops' if mixp.get('chops') else ''}, sidechain")
+            m = _tool(ace, "mixsong", root, tw / "mix", log, params={
+                **mixp, "take": g["files"][0]["path"], "vocal": a["vocal"], "bpm": bpm, "key": key,
+                "chops_seed": int(t.get("seed", 0)), "out_base": str(out_dir / name)})
+            rel = lambda f: str(Path(f).relative_to(root)).replace("\\", "/")
+            results.append({"name": name, "mp3": rel(m["mp3"]), "beat_mp3": rel(m["beat_mp3"]),
+                            "zip": rel(m["zip"]) if m.get("zip") else None,
+                            "seed": g["files"][0].get("seed"), "caption": t.get("caption")})
         except RuntimeError as e:
             results.append({"name": name, "error": str(e)})
         shutil.rmtree(tw, ignore_errors=True)
@@ -656,14 +705,19 @@ def pod_main(root: Path = Path("/workspace")) -> None:
 
 def process_job(path: Path, root: Path, ace: Ace, state: dict) -> dict | None:
     """Run one queued job. state carries busy / idle_since / status / stop for the watchdog."""
+    claim = path.with_name(f".{path.stem}.{os.environ.get('RUNPOD_POD_ID', 'local')}.claim")
+    try:  # a rename is atomic: if another pod got here first, it's theirs
+        os.replace(path, claim)
+    except OSError:
+        return None
     try:
-        job = json.loads(path.read_text(encoding="utf-8"))
+        job = json.loads(claim.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        path.unlink(missing_ok=True)
+        claim.unlink(missing_ok=True)
         return None
     run_dir = root / "glore" / "runs" / job["id"]
     run_dir.mkdir(parents=True, exist_ok=True)
-    os.replace(path, run_dir / "job.json")
+    os.replace(claim, run_dir / "job.json")
     status = Status(run_dir / "status.json", job["id"], job["mode"])
     status.update(gpu=gpu_info().get("name"), pod=os.environ.get("RUNPOD_POD_ID"))
     state.update(busy=True, status=status)
@@ -675,6 +729,8 @@ def process_job(path: Path, root: Path, ace: Ace, state: dict) -> dict | None:
                 result = run_generate_job(job, root, ace, log, status)
             elif job["mode"] == "song":
                 result = run_song_job(job, root, ace, log, status)
+            elif job["mode"] == "tool":
+                result = run_tool_job(job, root, ace, log, status)
             else:
                 result = run_train_job(job, root, ace, log, status, lambda: state.get("stop"))
             status.update(phase="done", progress=1.0, message="Done", result=result)

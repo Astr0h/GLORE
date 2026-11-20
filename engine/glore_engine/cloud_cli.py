@@ -95,21 +95,51 @@ def settle_ledger(mgr: CloudManager) -> None:
         mgr.ledger.update(r["pod_id"], ended=min(end or cap_end, cap_end, time.time()))
 
 
-def _start_or_reuse(mgr: CloudManager, kind: str, hard_cap_s: float, idle_min: float, meta: dict) -> dict:
-    reuse = mgr.reusable_pod(kind)
+WORK_GPUS = "RTX 4090, L40S, RTX 6000 Ada, RTX 5090, A100"  # songs / tools: plenty for XL-SFT, far cheaper
+
+
+def work_gpus() -> str:
+    return os.environ.get("GLORE_WORK_GPU") or WORK_GPUS
+
+
+def _idle_pod(mgr: CloudManager, vol: cloud.Volume) -> dict | None:
+    """A pod that's up, has time left and isn't busy (a training pod mid-run is not reusable)."""
+    s = mgr.settings()
+    for r in mgr.ledger.active():
+        if r.get("datacenter") != s["datacenter"] or r["hard_cap_s"] - (time.time() - r["started"]) < 1200:
+            continue
+        hb = vol.get_json(f"glore/pods/{r['pod_id']}.json") or {}
+        if hb.get("busy") or time.time() - float(hb.get("heartbeat", 0)) > 180:
+            continue
+        p = mgr.rp().get_pod(r["pod_id"])
+        if p and p.get("status") == "RUNNING":
+            return r
+    return None
+
+
+def _start_or_reuse(mgr: CloudManager, kind: str, hard_cap_s: float, idle_min: float, meta: dict,
+                    gpus: str | None = None) -> dict:
+    reuse = _idle_pod(mgr, mgr.volume())
     if reuse:
+        print(f"  reusing idle pod {reuse['pod_id']}")
         return reuse
     s = mgr.settings()
-    choices = cloud.gpu_choices(mgr.rp().gpus(), s["datacenter"], s["gpu"])
+    choices = cloud.gpu_choices(mgr.rp().gpus(), s["datacenter"], gpus or s["gpu"])
     mgr.check_budget(max(p for _, p in choices[:4]) * hard_cap_s / 3600)
     return mgr.start_pod_any(kind, choices[:4], hard_cap_s, idle_min, meta=meta,
                              report=lambda m: print(f"  {m}", flush=True))
 
 
+ENGINE_MODULES = ("__init__", "audio_io", "analysis", "separation", "cleanup", "vocal_lock", "chops", "fx", "mixing")
+
+
 def sync_scripts(vol: cloud.Volume) -> None:
     pod_dir = Path(glore_pod.__file__).parent
-    for name in ("glore_pod.py", "glore_label.py", "glore_generate.py", "glore_song.py", "pod_start.sh"):
+    for name in ("glore_pod.py", "glore_label.py", "glore_generate.py", "glore_song.py", "glore_tools.py",
+                 "pod_start.sh"):
         vol.put_bytes(f"glore/{name}", (pod_dir / name).read_bytes().replace(b"\r\n", b"\n"))
+    for mod in ENGINE_MODULES:  # GLORE's own audio code, for glore_tools.py
+        vol.put_bytes(f"glore/engine/glore_engine/{mod}.py", (pod_dir.parent / f"{mod}.py").read_bytes())
 
 
 # ---------------------------------------------------------------- commands
@@ -180,7 +210,7 @@ def cmd_generate(a) -> dict:
     job_id = uuid.uuid4().hex[:10]
     job = {"id": job_id, "mode": "generate", "variant": a.variant, "lm": a.lm or None, "takes": takes}
     vol.put_bytes(f"glore/queue/{job_id}.json", json.dumps(job).encode())
-    row = _start_or_reuse(mgr, "train", a.hard_cap_hours * 3600, 10, {"job": job_id})
+    row = _start_or_reuse(mgr, "train", a.hard_cap_hours * 3600, 10, {"job": job_id}, gpus=work_gpus())
     print(json.dumps({"job": job_id, "pod": row["pod_id"], "gpu": row.get("gpu"), "takes": len(takes)}, indent=2))
     if a.wait:
         return cmd_fetch(argparse.Namespace(job=job_id, out=a.out, wait=True, timeout_min=a.timeout_min))
@@ -294,17 +324,33 @@ def cmd_import(a) -> dict:
         raise CloudError("GLORE_WEB_KEY is needed to decrypt uploads")
     vol = manager().volume()
     with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / safe_file(a.name or "upload")
+        name = (a.name or "upload").replace("_", " ")
+        src = Path(tmp) / safe_file(name)
         src.write_bytes(decrypt_upload(take_upload(a.upload), key))
-        item = library_add(vol, src, a.name or src.name, a.kind, "upload")
+        item = library_add(vol, src, name, a.kind, "upload")
     print(json.dumps(item, indent=2))
     return item
 
 
+HOME_ONLY = ("youtube", "spotify", "apple")  # YouTube bot-blocks cloud machines; Spotify/Apple match via YouTube
+PENDING = f"{LIB}/pending"
+
+
 def cmd_link(a) -> dict:
-    """YouTube / SoundCloud / Spotify / Apple Music link -> the library (downloaded right here on the runner)."""
-    from .linkimport import LinkError, fetch_link
+    """SoundCloud: downloaded right here. YouTube / Spotify / Apple Music: YouTube blocks cloud servers, so the
+    link waits in the library for GLORE on your PC, which downloads it at home and uploads it."""
+    from .linkimport import LinkError, detect_service, fetch_link
     vol = manager().volume()
+    try:
+        service = detect_service(a.url)
+    except Exception as e:
+        raise CloudError(str(e)) from e
+    if service in HOME_ONLY and not a.here:
+        req = {"id": uuid.uuid4().hex[:10], "url": a.url, "kind": a.kind, "service": service, "created": time.time()}
+        vol.put_bytes(f"{PENDING}/{req['id']}.json", json.dumps(req).encode())
+        print(f"Waiting for your PC: {service.title()} blocks cloud servers, so GLORE on your PC will download it "
+              f"next time it's running, then it shows up in your library.")
+        return {"pending": req}
     last = [0.0]
 
     def report(p, m):
@@ -323,6 +369,41 @@ def cmd_link(a) -> dict:
         tmp.cleanup()
     print(json.dumps(item, indent=2))
     return item
+
+
+def pending_links(vol: cloud.Volume) -> list[dict]:
+    out = []
+    for k in vol.list_keys(f"{PENDING}/"):
+        raw = vol.get_bytes(k) if k.endswith(".json") else None
+        if raw:
+            out.append(json.loads(raw))
+    return sorted(out, key=lambda r: r.get("created", 0))
+
+
+def process_pending_links(vol: cloud.Volume, report=print) -> list[dict]:
+    """Run on the PC (home internet): download every waiting link, put it in the library."""
+    from .linkimport import LinkError, fetch_link
+    done = []
+    for req in pending_links(vol):
+        key = f"{PENDING}/{req['id']}.json"
+        try:
+            wav, info, tmp = fetch_link(req["url"])
+        except LinkError as e:
+            if req.get("error") != str(e):  # shows in GLORE Web; tried again each minute in case it was a blip
+                req["error"] = str(e)
+                vol.put_bytes(key, json.dumps(req).encode())
+            report(f"link failed: {req['url']}: {e}")
+            continue
+        try:
+            name = f"{info.artist} - {info.title}" if info.artist and info.title else (info.title or "Imported")
+            item = library_add(vol, wav, name, req.get("kind", "song"), "link", url=req["url"], service=info.service,
+                               title=info.title, artist=info.artist, matched=info.matched)
+        finally:
+            tmp.cleanup()
+        vol.delete(key)
+        report(f"downloaded {item['name']} into your cloud library")
+        done.append(item)
+    return done
 
 
 def cmd_library(a) -> dict:
@@ -353,28 +434,72 @@ def cmd_song(a) -> dict:
     settle_ledger(mgr)
     vol = mgr.volume()
     job_id = uuid.uuid4().hex[:10]
+    item_id = a.item
     if a.upload:
-        data = decrypt_upload(take_upload(a.upload), key)
-        safe = "".join(c for c in Path(a.name or "upload").name if c.isalnum() or c in " ._-()").strip() or "upload"
-        src = f"uploads/{job_id}/{safe}"
-        vol.put_bytes(src, data)
-        print(f"  uploaded {len(data) / 2 ** 20:.1f} MB to {src}")
+        with tempfile.TemporaryDirectory() as tmp:
+            name = (a.name or "upload").replace("_", " ")
+            f = Path(tmp) / safe_file(name)
+            f.write_bytes(decrypt_upload(take_upload(a.upload), key))
+            item_id = library_add(vol, f, name, a.kind, "upload")["id"]
+        print(f"  saved to your library ({item_id})")
     elif a.source:
-        src = a.source
-    else:
-        raise CloudError("Give --upload (from GLORE Web) or --source (a file already on the volume)")
+        item_id = None
+    elif not item_id:
+        raise CloudError("Give --upload (from GLORE Web), --item (from your library) or --source (a volume path)")
+    if item_id:
+        item = library_get(vol, item_id)
+        a.bpm = a.bpm or item.get("bpm")
+        a.key = a.key or item.get("key")
     for t in takes:
         if t.get("lora"):
             t["lora_dir"] = resolve_lora(vol, t.get("pack", "house"), t["lora"])
             t.setdefault("trigger", f"glore_{t.get('pack', 'house')}")
     sync_scripts(vol)
-    job = {"id": job_id, "mode": "song", "upload": src, "kind": a.kind, "variant": a.variant,
+    job = {"id": job_id, "mode": "song", "kind": a.kind, "variant": a.variant,
+           **({"item": item_id} if item_id else {"upload": a.source}),
+           "fx": a.fx, "reverb": a.reverb, "delay": a.delay, "chops": a.chops or None,
+           "chops_density": a.chops_density, "vocal_db": a.vocal_db, "beat_db": a.beat_db, "chops_db": a.chops_db,
            "bpm": a.bpm, "key": (a.key or "").replace("_", " ") or None, "takes": takes}
     vol.put_bytes(f"glore/queue/{job_id}.json", json.dumps(job).encode())
-    row = _start_or_reuse(mgr, "train", a.hard_cap_hours * 3600, 10, {"job": job_id})
+    row = _start_or_reuse(mgr, "train", a.hard_cap_hours * 3600, 10, {"job": job_id}, gpus=work_gpus())
     print(json.dumps({"job": job_id, "pod": row["pod_id"], "gpu": row.get("gpu"), "takes": len(takes)}, indent=2))
     if a.wait:
         return cmd_fetch(argparse.Namespace(job=job_id, out=a.out, wait=True, timeout_min=a.timeout_min))
+    return {"job": job_id}
+
+
+TOOL_OPS = ("stems", "clean", "analyse", "lock", "chops")
+
+
+def cmd_tool(a) -> dict:
+    """Run one GLORE tool on a library item, on a cloud GPU. Results land back in the library."""
+    if a.op not in TOOL_OPS:
+        raise CloudError(f"op must be one of {', '.join(TOOL_OPS)}")
+    params = {}
+    for kv in a.set or []:  # key=value, numbers become numbers, a,b,c becomes a list
+        k, _, v = kv.partition("=")
+        v = v.replace("_", " ") if k == "key" else v
+        try:
+            params[k] = float(v)
+        except ValueError:
+            params[k] = v.split(",") if "," in v else v
+    if a.op == "clean" and isinstance(params.get("stages"), str):
+        params["stages"] = [params["stages"]]
+    mgr = manager()
+    settle_ledger(mgr)
+    vol = mgr.volume()
+    item = library_get(vol, a.item)
+    sync_scripts(vol)
+    job_id = uuid.uuid4().hex[:10]
+    vol.put_bytes(f"glore/queue/{job_id}.json", json.dumps(
+        {"id": job_id, "mode": "tool", "op": a.op, "item": a.item, "params": params}).encode())
+    row = _start_or_reuse(mgr, "train", 3600, 10, {"job": job_id}, gpus=work_gpus())
+    print(json.dumps({"job": job_id, "op": a.op, "item": item["name"], "pod": row["pod_id"]}, indent=2))
+    if a.wait:
+        st = wait_job(vol, job_id, a.timeout_min)
+        if st.get("phase") != "done":
+            raise CloudError(st.get("error") or st.get("message") or "the tool didn't finish")
+        print(json.dumps(st.get("result"), indent=2))
     return {"job": job_id}
 
 
@@ -385,23 +510,31 @@ def job_status(vol: cloud.Volume, job_id: str) -> dict:
     return {"phase": "queued"} if vol.get_bytes(f"glore/queue/{job_id}.json") else {"phase": "unknown"}
 
 
+def wait_job(vol: cloud.Volume, job_id: str, timeout_min: float, wait: bool = True, every: float | None = None) -> dict:
+    every = every or float(os.environ.get("GLORE_POLL_S", "30"))
+    t0, last = time.time(), None
+    while True:
+        st = job_status(vol, job_id)
+        line = f"  {st.get('phase')}: {st.get('message', '')}"
+        if line != last:
+            print(line, flush=True)
+            last = line
+        if st.get("phase") in ("done", "error", "stopped") or not wait:
+            return st
+        if time.time() - t0 > timeout_min * 60:
+            raise CloudError("Timed out waiting; the job keeps running - fetch again later")
+        time.sleep(every)
+
+
 def cmd_fetch(a) -> dict:
     mgr = manager()
     vol = mgr.volume()
-    t0 = time.time()
-    while True:
-        st = job_status(vol, a.job)
-        print(f"  {st.get('phase')}: {st.get('message', '')}", flush=True)
-        if st.get("phase") in ("done", "error", "stopped") or not a.wait:
-            break
-        if time.time() - t0 > a.timeout_min * 60:
-            raise CloudError("Timed out waiting; the job keeps running - fetch again later")
-        time.sleep(30)
+    st = wait_job(vol, a.job, a.timeout_min, a.wait)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     got = []
     for t in (st.get("result") or {}).get("takes", []):
-        for k in ("mp3", "beat_mp3"):
+        for k in ("mp3", "beat_mp3", "zip"):
             if t.get(k):
                 dest = out / Path(t[k]).name
                 vol.download(t[k], dest)
@@ -539,10 +672,15 @@ def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> di
                     t["url"] = link(t["mp3"])
                 if t.get("beat_mp3"):
                     t["beat_url"] = link(t["beat_mp3"])
+                if t.get("zip"):
+                    t["zip_url"] = link(t["zip"])
                 takes.append(t)
             row["takes"] = takes
             if st.get("mode") == "song":
                 row.update({k: res.get(k) for k in ("bpm", "key", "duration", "kind")})
+        elif st.get("mode") == "tool":
+            row.update({"op": res.get("op"), "item": res.get("item"),
+                        "made": [i.get("id") for i in res.get("items", [])]})
         elif st.get("mode") == "train":
             row["run_id"] = res.get("lora_dir", "").split("/")[2] if res.get("lora_dir") else None
         jobs.append(row)
@@ -563,7 +701,8 @@ def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> di
                                                   ExpiresIn=link_days * 86400)
         library.append(it)
     s = mgr.settings()
-    return {"updated": time.time(), "jobs": jobs[:max_jobs], "loras": loras, "library": library,
+    pending = [{k: r.get(k) for k in ("id", "url", "service", "kind", "created", "error")} for r in pending_links(vol)]
+    return {"updated": time.time(), "jobs": jobs[:max_jobs], "loras": loras, "library": library, "pending": pending,
             "active_pods": mgr.ledger.active(), "month_spend": mgr.month_spend(),
             "monthly_limit": s.get("monthly_limit"), "gpu_pref": s.get("gpu"), "datacenter": s.get("datacenter")}
 
@@ -649,11 +788,27 @@ def main(argv: list[str] | None = None) -> int:
     li = sub.add_parser("link")
     li.add_argument("--url", required=True)
     li.add_argument("--kind", default="song")
+    li.add_argument("--here", action="store_true", help="try downloading on this machine even for YouTube")
+    to = sub.add_parser("tool")
+    to.add_argument("--op", required=True)
+    to.add_argument("--item", required=True)
+    to.add_argument("--set", action="append", help="key=value (repeat)")
+    to.add_argument("--wait", action="store_true")
+    to.add_argument("--timeout-min", type=float, default=40)
     lb = sub.add_parser("library")
     lb.add_argument("--delete")
     so = sub.add_parser("song")
     so.add_argument("--upload", help="path in the glore-uploads branch (from GLORE Web)")
     so.add_argument("--source", help="or: a file already on the volume")
+    so.add_argument("--item", help="or: a library item id")
+    so.add_argument("--fx", default="clean", choices=["clean", "airy", "club", "none"])
+    so.add_argument("--reverb", type=float, default=0.5)
+    so.add_argument("--delay", type=float, default=0.5)
+    so.add_argument("--chops", default="", help="house | rnb | gospel (blank = no chops)")
+    so.add_argument("--chops-density", type=float, default=1.0)
+    so.add_argument("--vocal-db", type=float, default=0.0)
+    so.add_argument("--beat-db", type=float, default=0.0)
+    so.add_argument("--chops-db", type=float, default=0.0)
     so.add_argument("--name", default="")
     so.add_argument("--kind", default="vocal", help="vocal (a cappella) or song (vocal gets separated out)")
     so.add_argument("--takes", required=True)
@@ -678,7 +833,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
          "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
-                "import": cmd_import, "link": cmd_link, "library": cmd_library}[a.cmd](a)
+                "import": cmd_import, "link": cmd_link, "library": cmd_library,
+                "tool": cmd_tool}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

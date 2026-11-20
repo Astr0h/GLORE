@@ -121,6 +121,27 @@ a { color: var(--accent); }
   padding: 14px; margin: 0; transition: border-color .15s, color .15s; }
 .drop:hover, .drop.has { border-color: var(--accent); color: var(--text); }
 .beat-link { font-size: 12px; }
+.links { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 12px; margin-bottom: 4px; }
+.seg span { text-align: center; padding: 8px; border-radius: 9px; font-size: 13px; color: var(--dim); cursor: pointer; font-weight: 500; }
+.seg span.on { background: var(--panel-3); color: var(--text); box-shadow: 0 1px 0 var(--line-strong) inset; }
+.item { display: grid; gap: 8px; }
+.item + .item { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.item-top { display: flex; align-items: center; gap: 8px; }
+.item-top b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line-strong); color: var(--dim); white-space: nowrap; flex: none; }
+.tag.vocal { color: var(--accent); border-color: rgba(255,143,61,.35); }
+.tag.chops { color: var(--second); }
+.meta { font-size: 12px; color: var(--faint); font-family: "JetBrains Mono", monospace; }
+.acts-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.acts-row button { padding: 6px 10px; font-size: 12px; border-radius: 8px; font-weight: 500; }
+.acts-row .use { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(255,143,61,.35); }
+.working { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--accent); }
+.pending { font-size: 13px; }
+.pending .err { color: var(--danger); }
+.sheet .card { max-height: 86vh; overflow: auto; }
+nav button { max-width: 120px; padding: 8px 2px; }
 @media (min-width: 700px) { main { padding: 26px; } }
 </style>
 </head>
@@ -156,9 +177,16 @@ a { color: var(--accent); }
   <section class="view" id="v-song">
     <h2>Your vocal → a song</h2>
     <div class="card hl">
+      <div class="seg" id="srcSeg"><span class="on" data-s="upload">Upload</span><span data-s="library">From library</span></div>
+      <div id="srcUpload">
       <label>Audio</label>
       <label class="drop" id="drop"><input type="file" id="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.aiff,.ogg" hidden>
         <span id="fileLabel">Tap to choose a vocal or a song</span></label>
+      </div>
+      <div id="srcLibrary" style="display:none">
+        <label>From your library</label>
+        <select id="songItem"></select>
+      </div>
       <label>What is it?</label>
       <div class="pill-row" id="kindPills">
         <span class="pill on" data-k="vocal">Just the vocal</span>
@@ -178,10 +206,63 @@ a { color: var(--accent); }
       </div>
       <label>Takes</label>
       <div class="pill-row" id="songCountPills"></div>
+    </div>
+    <h2>Mix</h2>
+    <div class="card">
+      <label>Vocal FX</label>
+      <div class="pill-row" id="fxPills">
+        <span class="pill on" data-v="clean">Clean</span><span class="pill" data-v="airy">Airy</span>
+        <span class="pill" data-v="club">Club</span><span class="pill" data-v="none">None</span>
+      </div>
+      <div class="row">
+        <div><label>Reverb <span class="val" id="reverbVal">50</span></label><input type="range" id="reverb" min="0" max="1" step="0.05" value="0.5"></div>
+        <div><label>Delay <span class="val" id="delayVal">50</span></label><input type="range" id="delay" min="0" max="1" step="0.05" value="0.5"></div>
+      </div>
+      <label>Vocal chops</label>
+      <div class="pill-row" id="chopPills">
+        <span class="pill on" data-v="">None</span><span class="pill" data-v="house">House</span>
+        <span class="pill" data-v="rnb">R&amp;B / Rap</span><span class="pill" data-v="gospel">Gospel / Soul</span>
+      </div>
+      <div class="row">
+        <div><label>Chop amount <span class="val" id="chopDenVal">1.0×</span></label><input type="range" id="chopDen" min="0.4" max="2" step="0.1" value="1"></div>
+        <div><label>Vocal level <span class="val" id="vocDbVal">0 dB</span></label><input type="range" id="vocDb" min="-6" max="6" step="0.5" value="0"></div>
+      </div>
+      <div class="hint">Every take comes with the full song, the beat on its own, and a stems ZIP (vocal, drums, bass, music, chops) for Ableton.</div>
       <button class="btn wide" id="songBtn">Build the song</button>
       <div class="hint" id="songHint">Your file is encrypted on this device before upload. The beat is written while the model hears your vocal; then your real vocal goes on top. About 10–20 minutes.</div>
       <div class="bar" id="upBar" style="display:none"><i style="width:0%"></i></div>
     </div>
+  </section>
+
+  <!-- library -->
+  <section class="view" id="v-library">
+    <h2>Add to your library</h2>
+    <div class="card hl">
+      <div class="seg" id="addSeg"><span class="on" data-s="file">File</span><span data-s="link">Link</span></div>
+      <div id="addFile">
+        <label class="drop" id="libDrop" style="margin-top:12px"><input type="file" id="libFile" accept="audio/*,.wav,.mp3,.m4a,.flac,.aiff,.ogg" hidden>
+          <span id="libFileLabel">Tap to choose audio</span></label>
+      </div>
+      <div id="addLink" style="display:none">
+        <label>Link</label>
+        <input id="linkUrl" type="url" inputmode="url" placeholder="SoundCloud, YouTube, Spotify or Apple Music link">
+        <div class="hint">SoundCloud downloads straight away. YouTube blocks cloud servers, so YouTube, Spotify and Apple links wait for GLORE on your PC, which downloads them at home.</div>
+      </div>
+      <label>What is it?</label>
+      <div class="pill-row" id="libKind">
+        <span class="pill on" data-k="song">Full song</span><span class="pill" data-k="vocal">Vocal</span>
+        <span class="pill" data-k="beat">Beat</span><span class="pill" data-k="other">Other</span>
+      </div>
+      <button class="btn wide" id="addBtn">Add</button>
+      <div class="bar" id="libBar" style="display:none"><i style="width:0%"></i></div>
+    </div>
+    <div id="libWorking"></div>
+    <h2>Library</h2>
+    <div class="pill-row" id="libFilter" style="margin-bottom:10px">
+      <span class="pill on" data-f="">All</span><span class="pill" data-f="vocal">Vocals</span><span class="pill" data-f="song">Songs</span>
+      <span class="pill" data-f="beat">Beats</span><span class="pill" data-f="stem">Stems</span><span class="pill" data-f="chops">Chops</span>
+    </div>
+    <div class="card" id="libList"></div>
   </section>
 
   <!-- create -->
@@ -253,6 +334,7 @@ a { color: var(--accent); }
 
 <nav id="nav">
   <button data-v="song" class="on"><svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>Song</button>
+  <button data-v="library"><svg viewBox="0 0 24 24"><path d="M4 4v16M9 4v16"/><path d="M14 4.5l5.5 15"/></svg>Library</button>
   <button data-v="create"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>Create</button>
   <button data-v="takes"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Takes</button>
   <button data-v="train"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Train</button>
@@ -260,6 +342,8 @@ a { color: var(--accent); }
 </nav>
 
 <div class="toast" id="toast"></div>
+<div class="modal sheet" id="sheet"><div class="card"><h3 id="sTitle"></h3><div id="sBody"></div>
+  <div class="acts" style="margin-top:18px"><button class="ghost" id="sNo">Cancel</button><button class="btn" id="sYes">Run</button></div></div></div>
 <div class="modal" id="modal"><div class="card"><h3 id="mTitle"></h3><p id="mText"></p>
   <div class="acts"><button class="ghost" id="mNo">Cancel</button><button class="btn" id="mYes">OK</button></div></div></div>
 
@@ -340,7 +424,7 @@ function render() {
   const live = state && (state.active_pods || []).length;
   $("#spendChip").className = "chip" + (live ? " live" : "");
   $("#updated").textContent = state ? ago(state.updated) : "never";
-  renderLoras(); renderTakes(); renderTrain(); renderCloud(); renderRuns();
+  renderLoras(); renderTakes(); renderTrain(); renderCloud(); renderRuns(); renderLibrary();
 }
 function loraVariant(v) { return !v ? "xl_sft" : v.includes("xl_sft") ? "xl_sft" : v.includes("-sft-") ? "sft" : v.includes("-base-") ? "base" : "turbo"; }
 function renderLoras() {
@@ -374,7 +458,8 @@ function renderTakes() {
         <div class="take-top"><b>${esc(t.name)}</b><span class="spacer"></span><span class="faint mono">seed ${esc(t.seed ?? "")}</span>
           <a class="ghost small" style="text-decoration:none;color:var(--text)" href="${esc(t.url)}" target="_blank" rel="noopener">MP3</a></div>
         <audio controls preload="none" src="${esc(t.url)}"></audio>
-        ${t.beat_url ? `<a class="beat-link" href="${esc(t.beat_url)}" target="_blank" rel="noopener">Beat only (no vocal) ↗</a>` : ""}
+        ${t.beat_url || t.zip_url ? `<div class="links">${t.beat_url ? `<a href="${esc(t.beat_url)}" target="_blank" rel="noopener">Beat only ↗</a>` : ""}
+          ${t.zip_url ? `<a href="${esc(t.zip_url)}" target="_blank" rel="noopener">Stems ZIP (WAV) ↗</a>` : ""}</div>` : ""}
         ${t.planned_caption ? `<div class="cap">${esc(t.planned_caption)}</div>` : ""}</div>`
       : `<div class="take"><b>${esc(t.name)}</b><div class="cap" style="color:var(--danger)">${esc(t.error || "failed")}</div></div>`).join("");
     return `<div class="card">${head}<div style="margin-top:12px">${takes}</div></div>`;
@@ -463,24 +548,30 @@ async function uploadEncrypted(bytes, path, progress) {
   else await gh("/git/refs", { method: "POST", body: JSON.stringify({ ref: "refs/heads/glore-uploads", sha: commit.sha }) });
 }
 async function buildSong() {
-  const f = $("#file").files[0];
-  if (!f) return toast("Choose a vocal or a song first", true);
-  if (f.size > 70 * 2 ** 20) return toast("That file is over 70 MB: export an MP3 or a shorter WAV", true);
+  const f = songSrc === "upload" ? $("#file").files[0] : null;
+  const item = songSrc === "library" ? lib().find((i) => i.id === $("#songItem").value) : null;
+  if (songSrc === "upload" && !f) return toast("Choose a vocal or a song first", true);
+  if (songSrc === "library" && !item) return toast("Pick something from your library", true);
+  if (f && f.size > 70 * 2 ** 20) return toast("That file is over 70 MB: export an MP3 or a shorter WAV", true);
   const prompt = $("#songPrompt").value.trim() || $("#songPrompt").placeholder;
   const lora = $("#songLora").value, seed0 = Math.floor(Math.random() * 1e9);
-  const base = f.name.replace(/\.[^.]+$/, "").slice(0, 28) || "song";
+  const base = (f ? f.name.replace(/\.[^.]+$/, "") : item.name).replace(/[^A-Za-z0-9 ._()+-]/g, "").slice(0, 28).trim() || "song";
   const takes = Array.from({ length: songCount }, (_, i) => ({ name: `${base} ${i + 1}`, caption: prompt, lora: lora || undefined,
     scale: Number($("#songScale").value), seed: seed0 + i, tracks: [...songTracks] }));
   const bar = $("#upBar"), fill = bar.querySelector("i"), btn = $("#songBtn");
   const progress = (p, m) => { bar.style.display = "block"; fill.style.width = Math.round(p * 100) + "%"; btn.textContent = m; };
   btn.disabled = true;
   try {
-    progress(0.1, "Encrypting…");
-    const enc = await encryptFile(await f.arrayBuffer());
-    const path = `uploads/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;
-    await uploadEncrypted(enc, path, progress);
-    const safeName = f.name.replace(/[^A-Za-z0-9._()-]+/g, "_");
-    let args = `--wait --upload ${path} --name ${safeName} --kind ${songKind} --variant ${loraVariant(lora)}`;
+    let args = `--wait --kind ${songKind} --variant ${loraVariant(lora)}`;
+    if (f) {
+      progress(0.1, "Encrypting…");
+      const enc = await encryptFile(await f.arrayBuffer());
+      const path = `uploads/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;
+      await uploadEncrypted(enc, path, progress);
+      args += ` --upload ${path} --name ${argName(f.name)}`;
+    } else args += ` --item ${item.id}`;
+    args += ` --fx ${songFx} --reverb ${$("#reverb").value} --delay ${$("#delay").value} --vocal-db ${$("#vocDb").value}`;
+    if (songChops) args += ` --chops ${songChops} --chops-density ${$("#chopDen").value}`;
     if ($("#songBpm").value) args += ` --bpm ${Number($("#songBpm").value)}`;
     if ($("#songKey").value) args += ` --key ${$("#songKey").value.replace(" ", "_")}`;
     progress(0.95, "Starting the cloud job…");
@@ -495,8 +586,7 @@ function initSong() {
   $("#file").onchange = () => { const f = $("#file").files[0];
     $("#fileLabel").textContent = f ? `${f.name} · ${(f.size / 2 ** 20).toFixed(1)} MB` : "Tap to choose a vocal or a song";
     $("#drop").classList.toggle("has", !!f); };
-  $("#kindPills").onclick = (e) => { const k = e.target.dataset.k; if (!k) return; songKind = k;
-    document.querySelectorAll("#kindPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.k === k)); };
+  $("#kindPills").onclick = (e) => { const k = e.target.dataset.k; if (!k) return; songKind = k; setKind(); };
   $("#songCountPills").innerHTML = [1, 2, 3, 4].map((n) => `<span class="pill ${n === songCount ? "on" : ""}" data-n="${n}">${n}</span>`).join("");
   $("#songCountPills").onclick = (e) => { const n = e.target.dataset.n; if (!n) return; songCount = Number(n);
     document.querySelectorAll("#songCountPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.n === n)); };
@@ -509,6 +599,197 @@ function initSong() {
   $("#songKey").value = "";
   $("#songPrompt").value = store.get("songPrompt", "");
   $("#songBtn").onclick = buildSong;
+}
+
+// ------------------------------------------------------------- library
+let libKind = "song", libFilter = "", addMode = "file", songSrc = "upload", recentTools = {};
+const KIND_LABEL = { vocal: "vocal", song: "song", beat: "beat", stem: "stem", chops: "chops", other: "other" };
+const TOOL_WORD = { stems: "Splitting into stems", clean: "Cleaning", analyse: "Finding BPM and key", lock: "Stretching", chops: "Chopping" };
+const lib = () => (state && state.library) || [];
+const fmtLen = (s) => !s ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+const argName = (n) => n.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._()-]+/g, "_").slice(0, 70) || "audio";
+
+function itemMeta(i) {
+  return [fmtLen(i.duration), i.bpm ? `${Math.round(i.bpm * 10) / 10} BPM` : "", i.key || "", i.camelot || "",
+          i.origin === "link" && i.service ? i.service : ""].filter(Boolean).join(" · ");
+}
+function renderLibrary() {
+  // song source picker
+  const sel = $("#songItem"), keep = sel.value || store.get("songItem", "");
+  const usable = lib().filter((i) => ["vocal", "song"].includes(i.kind) || i.stem === "vocals");
+  sel.innerHTML = usable.length ? usable.map((i) => `<option value="${esc(i.id)}">${esc(i.name)} · ${esc(KIND_LABEL[i.kind] || i.kind)}${i.bpm ? ` · ${Math.round(i.bpm)} BPM` : ""}</option>`).join("")
+    : `<option value="">Nothing in your library yet</option>`;
+  if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  // working + pending
+  const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "tool" && !["done", "error", "stopped"].includes(j.phase));
+  const fresh = Object.entries(recentTools).filter(([, t]) => Date.now() - t.at < 25 * 60e3 && !(state && state.updated * 1000 > t.at + 60e3));
+  const pend = (state && state.pending) || [];
+  $("#libWorking").innerHTML = (jobs.length || fresh.length || pend.length) ? `<div class="card">
+    ${jobs.map((j) => `<div class="working"><span class="dot on"></span>${esc(j.message || "Working")}</div>`).join("")}
+    ${!jobs.length ? fresh.map(([, t]) => `<div class="working"><span class="dot on"></span>${esc(t.label)}</div>`).join("") : ""}
+    ${pend.map((r) => `<div class="pending" style="margin-top:6px"><span class="dim">Waiting for your PC:</span> ${esc(r.url)}
+       ${r.error ? `<div class="err">${esc(r.error)}</div>` : ""}</div>`).join("")}
+    <div class="hint">Results show up below when they're done. ${pend.length ? "Links download when GLORE is running on your PC." : ""}</div></div>` : "";
+  // list
+  const items = lib().filter((i) => !libFilter || i.kind === libFilter);
+  $("#libList").innerHTML = items.length ? items.map((i) => `<div class="item" data-id="${esc(i.id)}">
+      <div class="item-top"><b title="${esc(i.name)}">${esc(i.name)}</b><span class="tag ${esc(i.kind)}">${esc(KIND_LABEL[i.kind] || i.kind)}</span></div>
+      <div class="meta">${esc(itemMeta(i)) || "&nbsp;"}</div>
+      <audio controls preload="none" src="${esc(i.url)}"></audio>
+      <div class="acts-row">
+        ${["vocal", "song"].includes(i.kind) ? `<button class="use" data-a="use">Use in song</button>` : ""}
+        ${i.kind !== "chops" && i.kind !== "stem" ? `<button class="ghost" data-a="stems">Stems</button>` : ""}
+        ${i.kind === "vocal" ? `<button class="ghost" data-a="clean">Clean</button>` : ""}
+        <button class="ghost" data-a="analyse">${i.bpm ? "Re-analyse" : "BPM & key"}</button>
+        <button class="ghost" data-a="lock">Tempo / pitch</button>
+        ${i.kind === "vocal" ? `<button class="ghost" data-a="chops">Chops</button>` : ""}
+        <a class="ghost small" style="text-decoration:none;color:var(--text);padding:6px 10px;font-size:12px" href="${esc(i.url)}" download target="_blank" rel="noopener">Save</a>
+        <button class="ghost" data-a="delete" style="color:var(--danger)">Delete</button>
+      </div></div>`).join("")
+    : `<div class="empty">${lib().length ? "Nothing of that kind yet." : "Your library is empty. Add a vocal, a song or a link above."}</div>`;
+}
+
+function sheet(title, html, yes = "Run") { return new Promise((res) => {
+  $("#sTitle").textContent = title; $("#sBody").innerHTML = html; $("#sYes").textContent = yes; $("#sheet").classList.add("on");
+  const done = (v) => { $("#sheet").classList.remove("on"); res(v); };
+  $("#sNo").onclick = () => done(null);
+  $("#sYes").onclick = () => { const v = {}; $("#sBody").querySelectorAll("[name]").forEach((el) => {
+      v[el.name] = el.type === "checkbox" ? el.checked : el.value; }); done(v); };
+  $("#sBody").querySelectorAll(".pill-row[data-name]").forEach((row) => row.onclick = (e) => {
+    if (!e.target.dataset.v && e.target.dataset.v !== "") return;
+    row.querySelectorAll(".pill").forEach((p) => p.classList.toggle("on", p === e.target));
+    row.nextElementSibling.value = e.target.dataset.v; });
+  $("#sBody").querySelectorAll("input[type=range]").forEach((r) => { const out = r.parentElement.querySelector(".val");
+    if (out) r.oninput = () => out.textContent = r.dataset.fmt === "x" ? Number(r.value).toFixed(1) + "×" : (Number(r.value) > 0 ? "+" : "") + r.value; });
+}); }
+const pillField = (name, opts, val) => `<div class="pill-row" data-name="${name}">${opts.map(([v, l]) =>
+  `<span class="pill ${v === val ? "on" : ""}" data-v="${v}">${l}</span>`).join("")}</div><input type="hidden" name="${name}" value="${val}">`;
+
+async function runTool(op, item, sets = []) {
+  const args = [`--op ${op}`, `--item ${item.id}`, "--wait", ...sets.map((kv) => `--set ${kv}`)].join(" ");
+  await dispatch("tool", args);
+  recentTools[item.id + op] = { at: Date.now(), label: `${TOOL_WORD[op]}: ${item.name}` };
+  renderLibrary();
+  toast(`${TOOL_WORD[op]}… (a GPU starts if none is running, about 2–5 min)`);
+}
+
+async function libAction(a, item) {
+  if (a === "use") {
+    songSrc = "library"; setSrc(); $("#songItem").value = item.id;
+    songKind = item.kind === "song" ? "song" : "vocal"; setKind();
+    if (item.bpm) $("#songBpm").value = Math.round(item.bpm * 10) / 10;
+    if (item.key) $("#songKey").value = item.key;
+    return show("song");
+  }
+  if (a === "delete") {
+    if (await ask("Delete from your library?", `${item.name} is removed from the cloud volume. This can't be undone.`, "Delete"))
+      { await dispatch("library", `--delete ${item.id}`); toast("Deleting…"); }
+    return;
+  }
+  if (a === "analyse") return runTool("analyse", item);
+  if (a === "stems") {
+    if (!await ask("Split into stems?", `${item.name} → vocals, drums, bass and other, each added to your library.`, "Split")) return;
+    return runTool("stems", item);
+  }
+  if (a === "clean") {
+    const v = await sheet("Clean the vocal", `<p class="dim" style="font-size:14px;margin:0 0 6px">Each step runs a separate model, in this order.</p>
+      ${[["backing", "Remove backing vocals"], ["echo", "Remove echo / delay"], ["reverb", "Remove reverb"], ["noise", "Remove noise"]].map(([k, l]) =>
+        `<div class="toggle"><span>${l}</span><input type="checkbox" name="${k}" checked></div>`).join("")}`, "Clean");
+    if (!v) return;
+    const stages = ["backing", "echo", "reverb", "noise"].filter((k) => v[k]);
+    if (!stages.length) return toast("Pick at least one step", true);
+    return runTool("clean", item, [`stages=${stages.join(",")}`]);
+  }
+  if (a === "lock") {
+    const v = await sheet("Tempo and pitch", `
+      <div class="row"><div><label>From BPM</label><input name="source_bpm" type="number" inputmode="decimal" value="${item.bpm ? Math.round(item.bpm * 10) / 10 : ""}" placeholder="analyse first"></div>
+      <div><label>To BPM</label><input name="target_bpm" type="number" inputmode="decimal" value="${item.bpm ? Math.round(item.bpm) : 128}"></div></div>
+      <label>Pitch <span class="val">0</span></label><input type="range" name="pitch" min="-12" max="12" step="1" value="0">
+      <div class="hint">Stretching keeps the pitch; the pitch shift keeps the voice's character (formants). Within 0.5×–2× of the original tempo.</div>`, "Stretch");
+    if (!v) return;
+    if (!Number(v.source_bpm) || !Number(v.target_bpm)) return toast("Both BPMs are needed", true);
+    return runTool("lock", item, [`source_bpm=${Number(v.source_bpm)}`, `target_bpm=${Number(v.target_bpm)}`, `pitch=${Number(v.pitch)}`]);
+  }
+  if (a === "chops") {
+    const v = await sheet("Vocal chops", `
+      <label>Style</label>${pillField("style", [["house", "House"], ["rnb", "R&amp;B / Rap"], ["gospel", "Gospel / Soul"]], store.get("chopStyle", "house"))}
+      <div class="row"><div><label>BPM</label><input name="bpm" type="number" inputmode="decimal" value="${item.bpm ? Math.round(item.bpm * 10) / 10 : ""}" placeholder="needed"></div>
+      <div><label>Seed</label><input name="seed" type="number" inputmode="numeric" value="${Math.floor(Math.random() * 999)}"></div></div>
+      <label>Amount <span class="val">1.0×</span></label><input type="range" name="density" min="0.4" max="2" step="0.1" value="1" data-fmt="x">
+      <label>Slice length <span class="val">1.0×</span></label><input type="range" name="length" min="0.5" max="2" step="0.1" value="1" data-fmt="x">
+      <label>Pitch spread <span class="val">1.0×</span></label><input type="range" name="pitch_spread" min="1" max="2" step="0.1" value="1" data-fmt="x">
+      <div class="hint">Same seed = same chop. New seed = reshuffle. The result is a chops track at the vocal's tempo, in your library.</div>`, "Chop");
+    if (!v) return;
+    if (!Number(v.bpm)) return toast("Chops need a BPM: tap 'BPM & key' first or type one", true);
+    store.set("chopStyle", v.style);
+    const sets = ["style", "bpm", "seed", "density", "length", "pitch_spread"].map((k) => `${k}=${v[k]}`);
+    if (item.key) sets.push(`key=${item.key.replace(" ", "_")}`);
+    return runTool("chops", item, sets);
+  }
+}
+
+async function addToLibrary() {
+  const btn = $("#addBtn"), bar = $("#libBar"), fill = bar.querySelector("i");
+  const progress = (p, m) => { bar.style.display = "block"; fill.style.width = Math.round(p * 100) + "%"; btn.textContent = m; };
+  btn.disabled = true;
+  try {
+    if (addMode === "link") {
+      const url = $("#linkUrl").value.trim();
+      if (!/^https?:\/\/\S+$/.test(url)) throw new Error("Paste a full link (starting with https://)");
+      await dispatch("link", `--url ${url} --kind ${libKind}`);
+      $("#linkUrl").value = "";
+      toast(/soundcloud/.test(url) ? "Downloading from SoundCloud…" : "Queued: GLORE on your PC downloads it next time it runs");
+    } else {
+      const f = $("#libFile").files[0];
+      if (!f) throw new Error("Choose a file first");
+      if (f.size > 70 * 2 ** 20) throw new Error("That file is over 70 MB: export an MP3 or a shorter WAV");
+      progress(0.1, "Encrypting…");
+      const path = `uploads/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;
+      await uploadEncrypted(await encryptFile(await f.arrayBuffer()), path, progress);
+      await dispatch("import", `--upload ${path} --name ${argName(f.name)} --kind ${libKind}`);
+      progress(1, "Add"); $("#libFile").value = ""; $("#libFile").onchange();
+      toast("Uploaded. It shows in your library in a minute or two");
+    }
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = "Add"; setTimeout(() => bar.style.display = "none", 1500); }
+}
+
+function setSrc() {
+  document.querySelectorAll("#srcSeg span").forEach((x) => x.classList.toggle("on", x.dataset.s === songSrc));
+  $("#srcUpload").style.display = songSrc === "upload" ? "" : "none";
+  $("#srcLibrary").style.display = songSrc === "library" ? "" : "none";
+}
+function setKind() { document.querySelectorAll("#kindPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.k === songKind)); }
+function pills(sel, cb) { $(sel).onclick = (e) => { if (e.target.dataset.v === undefined) return;
+  document.querySelectorAll(sel + " .pill").forEach((p) => p.classList.toggle("on", p === e.target)); cb(e.target.dataset.v); }; }
+let songFx = store.get("songFx", "clean"), songChops = store.get("songChops", "");
+function initLibrary() {
+  $("#addSeg").onclick = (e) => { const m = e.target.dataset.s; if (!m) return; addMode = m;
+    document.querySelectorAll("#addSeg span").forEach((x) => x.classList.toggle("on", x.dataset.s === m));
+    $("#addFile").style.display = m === "file" ? "" : "none"; $("#addLink").style.display = m === "link" ? "" : "none"; };
+  $("#libFile").onchange = () => { const f = $("#libFile").files[0];
+    $("#libFileLabel").textContent = f ? `${f.name} · ${(f.size / 2 ** 20).toFixed(1)} MB` : "Tap to choose audio";
+    $("#libDrop").classList.toggle("has", !!f); };
+  $("#libKind").onclick = (e) => { const k = e.target.dataset.k; if (!k) return; libKind = k;
+    document.querySelectorAll("#libKind .pill").forEach((p) => p.classList.toggle("on", p.dataset.k === k)); };
+  $("#libFilter").onclick = (e) => { if (e.target.dataset.f === undefined) return; libFilter = e.target.dataset.f;
+    document.querySelectorAll("#libFilter .pill").forEach((p) => p.classList.toggle("on", p === e.target)); renderLibrary(); };
+  $("#addBtn").onclick = addToLibrary;
+  $("#libList").onclick = (e) => { const b = e.target.closest("button[data-a]"); if (!b) return;
+    const item = lib().find((i) => i.id === b.closest(".item").dataset.id);
+    if (item) libAction(b.dataset.a, item).catch((err) => toast(err.message, true)); };
+  $("#srcSeg").onclick = (e) => { if (!e.target.dataset.s) return; songSrc = e.target.dataset.s; setSrc(); };
+  $("#songItem").onchange = () => { const i = lib().find((x) => x.id === $("#songItem").value); store.set("songItem", $("#songItem").value);
+    if (i) { songKind = i.kind === "song" ? "song" : "vocal"; setKind();
+      if (i.bpm) $("#songBpm").value = Math.round(i.bpm * 10) / 10; if (i.key) $("#songKey").value = i.key; } };
+  pills("#fxPills", (v) => { songFx = v; store.set("songFx", v); });
+  pills("#chopPills", (v) => { songChops = v; store.set("songChops", v); });
+  document.querySelectorAll("#fxPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.v === songFx));
+  document.querySelectorAll("#chopPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.v === songChops));
+  const slide = (id, fmt) => { const r = $("#" + id); r.value = store.get(id, r.value);
+    const upd = () => { $("#" + id + "Val").textContent = fmt(Number(r.value)); store.set(id, r.value); }; r.oninput = upd; upd(); };
+  slide("reverb", (v) => Math.round(v * 100)); slide("delay", (v) => Math.round(v * 100));
+  slide("chopDen", (v) => v.toFixed(1) + "×"); slide("vocDb", (v) => (v > 0 ? "+" : "") + v + " dB");
 }
 
 // ------------------------------------------------------------- boot
@@ -560,6 +841,7 @@ $("#logoutBtn").onclick = async () => { if (await ask("Disconnect this device?",
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && cfg.token) pollRuns(); });
 initForm();
 initSong();
+initLibrary();
 if (cfg.token && cfg.key) start(); else show("setup");
 </script>
 </body>

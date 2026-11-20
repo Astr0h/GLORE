@@ -1,5 +1,6 @@
 """The PC-free cloud CLI (GitHub Actions): train from the volume, generate on the pod, ledger on the volume."""
 import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -42,6 +43,7 @@ def cli(tmp_path, monkeypatch):
     mgr.POLL_S = 0.05
     monkeypatch.setattr(cloud_cli, "manager", lambda s=None: mgr)
     monkeypatch.setattr(glore_pod, "FFMPEG", [sys.executable, "-c", COPY])
+    monkeypatch.setenv("GLORE_POLL_S", "0.2")
     return {"vol": vol, "rp": rp, "ace": ace, "mgr": mgr, "tmp": tmp_path}
 
 
@@ -150,7 +152,7 @@ def test_state_for_the_web_app_is_encrypted_and_has_play_links(cli, tmp_path, mo
     out = tmp_path / "state" / "state.json"
     assert cloud_cli.main(["publish-state", "--out", str(out)]) == 0
     enc = json.loads(out.read_text())
-    assert "warm house" not in out.read_text() and "t1" not in out.read_text()
+    assert "warm house" not in out.read_text() and "\"t1\"" not in out.read_text()
     d = lambda k: base64.b64decode(enc[k])
     key = hashlib.pbkdf2_hmac("sha256", b"correct horse battery staple", d("salt"), enc["iter"], dklen=32)
     state = json.loads(AESGCM(key).decrypt(d("iv"), d("ct"), None))
@@ -166,7 +168,12 @@ def test_publish_state_needs_the_web_key(cli, monkeypatch, capsys):
     assert "GLORE_WEB_KEY" in capsys.readouterr().err
 
 
-SONG = r'''
+class FakeS3:
+    def generate_presigned_url(self, op, Params, ExpiresIn):
+        return f"https://s3.example/{Params['Key']}?X-Expires={ExpiresIn}"
+
+
+SONG = r"""
 import json, sys, os, shutil
 what, path = sys.argv[1], sys.argv[2]
 job = json.load(open(path))
@@ -174,21 +181,44 @@ os.makedirs(job["work"], exist_ok=True)
 if what == "prep":
     v = os.path.join(job["work"], "vocal.wav"); shutil.copy(job["input"], v)
     print("GLORE_RESULT " + json.dumps({"vocal": v, "bpm": 128.0, "key": "F minor", "duration": 12.5, "kind": job["kind"]}))
+"""
+
+# stands in for glore_tools.py: records what it was asked, writes small outputs, adds library items
+TOOLS = r"""
+import json, sys, os, time, uuid
+op, path = sys.argv[1], sys.argv[2]
+job = json.load(open(path)); root = job["root"]; p = job["params"]; item = job["item"]
+open(os.path.join(root, f"seen-{op}.json"), "w").write(json.dumps(job))
+def add(name, kind):
+    i = uuid.uuid4().hex[:10]; d = os.path.join(root, "library", i); os.makedirs(d)
+    open(os.path.join(d, "a.flac"), "wb").write(b"flac")
+    it = {"id": i, "name": name, "kind": kind, "file": f"library/{i}/a.flac", "created": time.time(), "parent": item.get("id")}
+    open(os.path.join(d, "item.json"), "w").write(json.dumps(it)); return it
+if op == "mixsong":
+    b = p["out_base"]
+    for f in (b + ".mp3", b + " (beat).mp3", b + " (stems).zip"):
+        open(f, "wb").write(b"x")
+    print("GLORE_RESULT " + json.dumps({"mp3": b + ".mp3", "beat_mp3": b + " (beat).mp3", "zip": b + " (stems).zip"}))
+elif op == "stems":
+    print("GLORE_RESULT " + json.dumps({"items": [add(item["name"] + f" ({s})", "stem") for s in ("vocals", "drums", "bass", "other")]}))
+elif op == "analyse":
+    item.update(bpm=124.0, key="G minor"); open(os.path.join(root, "library", item["id"], "item.json"), "w").write(json.dumps(item))
+    print("GLORE_RESULT " + json.dumps({"updated": item}))
 else:
-    for k in ("song_mp3", "beat_mp3"):
-        open(job[k], "wb").write(b"mp3:" + open(job["take"], "rb").read()[:4])
-    print("GLORE_RESULT " + json.dumps({"song_mp3": job["song_mp3"], "beat_mp3": job["beat_mp3"]}))
-'''
+    print("GLORE_RESULT " + json.dumps({"items": [add(item["name"] + " (" + op + ")", "vocal")]}))
+"""
 
 
 class SongAce(GenAce):
-    def ensure(self, variant, log, status, extras=()):
+    def ensure(self, variant, log, status, extras=(), models=True):
         self.extras = extras
         status.update(phase="setup", message="pretend install")
 
     def py(self, *args):
         if args and str(args[0]).endswith("glore_song.py"):
             return [sys.executable, "-c", SONG, *args[1:]]
+        if args and str(args[0]).endswith("glore_tools.py"):
+            return [sys.executable, "-c", TOOLS, *args[1:]]
         return super().py(*args)
 
 
@@ -200,11 +230,20 @@ def encrypt_upload(data: bytes, passphrase: str) -> bytes:
     return salt + iv + AESGCM(key).encrypt(iv, data, None)
 
 
+def tiny_wav(seconds=0.5) -> bytes:
+    import io
+    import numpy as np
+    import soundfile as sf
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros((int(44100 * seconds), 2), dtype="float32"), 44100, format="WAV")
+    return buf.getvalue()
+
+
 def test_song_from_an_encrypted_upload(cli, tmp_path, monkeypatch):
     ace = SongAce(tmp_path)
     cli["rp"].ace = ace
     monkeypatch.setenv("GLORE_WEB_KEY", "pw")
-    blob = encrypt_upload(b"RIFF-fake-vocal", "pw")
+    blob = encrypt_upload(tiny_wav(), "pw")
     taken = []
     monkeypatch.setattr(cloud_cli, "take_upload", lambda p: (taken.append(p), blob)[1])
     vol = cli["vol"]
@@ -213,21 +252,91 @@ def test_song_from_an_encrypted_upload(cli, tmp_path, monkeypatch):
     tf.write_text(json.dumps([{"name": "my song 1", "caption": "deep house", "lora": "runX", "seed": 5},
                               {"name": "my song 2", "caption": "deep house", "seed": 6}]))
     out = tmp_path / "o"
-    rc = cloud_cli.main(["song", "--upload", "uploads/abc.bin", "--name", "../My Vocal.mp3", "--kind", "vocal",
-                         "--takes", str(tf), "--wait", "--out", str(out), "--timeout-min", "1"])
+    rc = cloud_cli.main(["song", "--upload", "uploads/abc.bin", "--name", "../My Vocal.wav", "--kind", "vocal",
+                         "--fx", "club", "--chops", "house", "--takes", str(tf), "--wait", "--out", str(out),
+                         "--timeout-min", "1"])
     assert rc == 0 and taken == ["uploads/abc.bin"]
     assert ace.extras == glore_pod.SONG_EXTRAS
     res = json.loads((out / "result.json").read_text())["result"]
     assert res["bpm"] == 128.0 and res["key"] == "F minor" and len(res["takes"]) == 2
-    assert sorted(p.name for p in out.glob("*.mp3")) == ["my song 1 (beat).mp3", "my song 1.mp3",
-                                                         "my song 2 (beat).mp3", "my song 2.mp3"]
-    # the decrypted vocal sits on the volume, with a safe name
-    ups = vol.list_keys("uploads/")
-    assert len(ups) == 1 and ups[0].endswith("/My Vocal.mp3")
-    assert vol.get_bytes(ups[0]) == b"RIFF-fake-vocal"
-    # generation used ACE 'complete' around the vocal, with ACE's own instruction format available
-    seen = [json.loads(p.read_text()) for p in (tmp_path / "ace").rglob("seen.json")]
-    assert not seen or all(s["mode"] == "complete" for s in seen)
+    assert sorted(p.name for p in out.iterdir() if p.suffix in (".mp3", ".zip")) == [
+        "my song 1 (beat).mp3", "my song 1 (stems).zip", "my song 1.mp3",
+        "my song 2 (beat).mp3", "my song 2 (stems).zip", "my song 2.mp3"]
+    # the upload went into the library as FLAC, with a safe name
+    items = cloud_cli.library_items(vol)
+    assert len(items) == 1 and items[0]["name"] == "My Vocal" and items[0]["file"].endswith("/My Vocal.flac")
+    assert items[0]["origin"] == "upload" and abs(items[0]["duration"] - 0.5) < 0.05
+    # the mix got the options from the web app, the vocal, BPM and key
+    mixed = json.loads((tmp_path / "volume" / "seen-mixsong.json").read_text())["params"]
+    assert mixed["fx"] == "club" and mixed["chops"] == "house" and mixed["bpm"] == 128.0 and mixed["key"] == "F minor"
+    # a second song can reuse the library item without uploading again
+    rc = cloud_cli.main(["song", "--item", items[0]["id"], "--takes", str(tf), "--wait", "--out", str(tmp_path / "o2"),
+                         "--timeout-min", "1"])
+    assert rc == 0 and taken == ["uploads/abc.bin"]
+
+
+def test_tools_add_results_to_the_library(cli, tmp_path, monkeypatch):
+    ace = SongAce(tmp_path)
+    cli["rp"].ace = ace
+    vol = cli["vol"]
+    src = tmp_path / "v.wav"
+    src.write_bytes(tiny_wav())
+    song = cloud_cli.library_add(vol, src, "Uzi song", "song", "upload")
+    assert cloud_cli.main(["tool", "--op", "stems", "--item", song["id"], "--wait", "--timeout-min", "1"]) == 0
+    names = sorted(i["name"] for i in cloud_cli.library_items(vol))
+    assert names == ["Uzi song", "Uzi song (bass)", "Uzi song (drums)", "Uzi song (other)", "Uzi song (vocals)"]
+    assert cloud_cli.main(["tool", "--op", "analyse", "--item", song["id"], "--wait", "--timeout-min", "1"]) == 0
+    assert cloud_cli.library_get(vol, song["id"])["bpm"] == 124.0
+    assert cloud_cli.main(["tool", "--op", "chops", "--item", song["id"], "--set", "style=rnb", "--set", "seed=3",
+                           "--set", "key=A_minor", "--wait", "--timeout-min", "1"]) == 0
+    seen = json.loads((tmp_path / "volume" / "seen-chops.json").read_text())
+    assert seen["params"] == {"style": "rnb", "seed": 3.0, "key": "A minor"}
+    assert cloud_cli.main(["tool", "--op", "clean", "--item", song["id"], "--set", "stages=echo,reverb",
+                           "--wait", "--timeout-min", "1"]) == 0
+    assert json.loads((tmp_path / "volume" / "seen-clean.json").read_text())["params"]["stages"] == ["echo", "reverb"]
+    assert ace.extras == glore_pod.SONG_EXTRAS + glore_pod.CLEAN_EXTRAS
+    assert cloud_cli.main(["tool", "--op", "explode", "--item", song["id"]]) == 1
+    # state for the web app lists the library with play links, and the tool jobs
+    vol.s3, vol.bucket = FakeS3(), "vol123"
+    st = cloud_cli.build_state(cli["mgr"])
+    assert len(st["library"]) == 7 and all(i["url"] for i in st["library"])
+    assert {j.get("op") for j in st["jobs"]} >= {"stems", "analyse", "chops", "clean"}
+    # delete
+    assert cloud_cli.main(["library", "--delete", song["id"]]) == 0
+    assert song["id"] not in [i["id"] for i in cloud_cli.library_items(vol)]
+
+
+def test_youtube_links_wait_for_the_pc(cli, tmp_path, monkeypatch):
+    vol = cli["vol"]
+    assert cloud_cli.main(["link", "--url", "https://youtu.be/abc123"]) == 0
+    pend = cloud_cli.pending_links(vol)
+    assert len(pend) == 1 and pend[0]["service"] == "youtube"
+    vol.s3, vol.bucket = FakeS3(), "vol123"
+    assert cloud_cli.build_state(cli["mgr"])["pending"][0]["url"] == "https://youtu.be/abc123"
+    # the PC (home internet) picks it up
+    from glore_engine import linkimport
+
+    class Info:
+        service, title, artist, matched = "youtube", "Song", "Artist", "Artist - Song"
+
+    def fake_fetch(url, progress=None):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        w = Path(tmp.name) / "a.wav"
+        w.write_bytes(tiny_wav())
+        return w, Info(), tmp
+    monkeypatch.setattr(linkimport, "fetch_link", fake_fetch)
+    done = cloud_cli.process_pending_links(vol, report=lambda m: None)
+    assert [d["name"] for d in done] == ["Artist - Song"] and not cloud_cli.pending_links(vol)
+    assert cloud_cli.library_items(vol)[0]["url"] == "https://youtu.be/abc123"
+    # a failure is recorded for the web app, and kept for another try
+    assert cloud_cli.main(["link", "--url", "https://open.spotify.com/track/xyz"]) == 0
+
+    def broken(url, progress=None):
+        raise linkimport.LinkError("That track isn't available")
+    monkeypatch.setattr(linkimport, "fetch_link", broken)
+    cloud_cli.process_pending_links(vol, report=lambda m: None)
+    assert cloud_cli.pending_links(vol)[0]["error"] == "That track isn't available"
 
 
 def test_decrypt_upload_rejects_the_wrong_key():

@@ -422,8 +422,9 @@ def _s3_msg(e: Exception) -> str:
     resp = getattr(e, "response", None) or {}
     code = resp.get("Error", {}).get("Code", "")
     if code in ("InvalidAccessKeyId", "SignatureDoesNotMatch", "403", "AccessDenied"):
+        detail = resp.get("Error", {}).get("Message", "")
         return ("RunPod's S3 API refused the key. Check the S3 access key (your user_… id) and secret, "
-                "and that your PC's clock is right.")
+                f"and that your PC's clock is right. [{code}{': ' + detail if detail else ''}]")
     if code in ("NoSuchBucket",):
         return "That network volume wasn't found in this datacenter"
     return f"Cloud storage error: {e}"

@@ -257,6 +257,32 @@ def cmd_loras(a) -> dict:
     return found
 
 
+def cmd_check(a) -> dict:
+    """Which volumes this S3 key can see, and whether the configured one is among them."""
+    s = env_settings()
+    vol = cloud.Volume(s)
+    out = {"datacenter": s["datacenter"], "volume_id_set": s["volume_id"][:3] + "…" + s["volume_id"][-2:],
+           "access_key_set": s["s3_access_key"][:5] + "…"}
+    try:
+        names = [b["Name"] for b in vol.s3.list_buckets().get("Buckets", [])]
+        out["volumes_this_key_sees"] = names
+        out["configured_volume_found"] = s["volume_id"] in names
+    except Exception as e:
+        out["list_error"] = cloud._s3_msg(e)
+    try:
+        vol.s3.list_objects_v2(Bucket=vol.bucket, MaxKeys=3)
+        out["volume_readable"] = True
+    except Exception as e:
+        out["volume_readable"] = False
+        out["read_error"] = cloud._s3_msg(e)
+    try:
+        out["runpod_api"] = f"ok, {len(cloud.RunPod(s['api_key']).gpus())} GPU types listed"
+    except CloudError as e:
+        out["runpod_api"] = str(e)
+    print(json.dumps(out, indent=2))
+    return out
+
+
 def cmd_stop(a) -> dict:
     mgr = manager()
     n = 0
@@ -297,10 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     lo = sub.add_parser("loras")
     lo.add_argument("--pack", default="house")
     sub.add_parser("stop")
+    sub.add_parser("check")
     a = ap.parse_args(argv)
     try:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
-         "loras": cmd_loras, "stop": cmd_stop}[a.cmd](a)
+         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

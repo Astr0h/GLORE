@@ -44,6 +44,7 @@ def cli(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_cli, "manager", lambda s=None: mgr)
     monkeypatch.setattr(glore_pod, "FFMPEG", [sys.executable, "-c", COPY])
     monkeypatch.setenv("GLORE_POLL_S", "0.2")
+    monkeypatch.setenv("GLORE_GPU_WAIT_S", "0")
     return {"vol": vol, "rp": rp, "ace": ace, "mgr": mgr, "tmp": tmp_path}
 
 
@@ -378,3 +379,24 @@ def test_decrypt_upload_rejects_the_wrong_key():
     assert cloud_cli.decrypt_upload(blob, "right") == b"secret"
     with pytest.raises(InvalidTag):
         cloud_cli.decrypt_upload(blob, "wrong")
+
+
+def test_no_gpu_shows_in_the_app_and_leaves_nothing_queued(cli, tmp_path, monkeypatch):
+    vol = cli["vol"]
+    src = tmp_path / "v.wav"
+    src.write_bytes(tiny_wav())
+    item = cloud_cli.library_add(vol, src, "Fred again.. - Winny.mp3", "song", "upload")
+    assert item["name"] == "Fred again.. - Winny"   # dots in a title are not a file extension
+
+    def sold_out(*a, **k):
+        raise CloudError("No RTX 4090 free in EUR-IS-1 right now. Try again in a few minutes.")
+    monkeypatch.setattr(cloud, "gpu_choices", sold_out)
+    monkeypatch.setattr(cloud_cli, "_idle_pod", lambda mgr, vol: None)
+    tf = tmp_path / "takes.json"
+    tf.write_text(json.dumps([{"name": "a", "caption": "house", "seed": 1}]))
+    assert cloud_cli.main(["song", "--item", item["id"], "--takes", str(tf)]) == 1
+    assert not [k for k in vol.list_keys("glore/queue/") if k.endswith(".json")]
+    vol.s3, vol.bucket = FakeS3(), "vol123"
+    st = cloud_cli.build_state(cli["mgr"])
+    err = next(j for j in st["jobs"] if j["mode"] == "song")
+    assert err["phase"] == "error" and "free in" in err["error"]

@@ -95,7 +95,9 @@ def settle_ledger(mgr: CloudManager) -> None:
         mgr.ledger.update(r["pod_id"], ended=min(end or cap_end, cap_end, time.time()))
 
 
-WORK_GPUS = "RTX 4090, L40S, RTX 6000 Ada, RTX 5090, A40, RTX A6000, L40, A100"  # songs / tools: plenty for XL-SFT, far cheaper
+# songs / tools: anything with 16 GB+ runs XL-SFT; cheapest first, wide because Iceland often has little in stock
+WORK_GPUS = ("RTX 4000 Ada, RTX A4000, RTX A4500, RTX 2000 Ada, RTX A5000, RTX 3090, RTX 4080, L4, RTX 5080, "
+             "RTX PRO 4000, A40, RTX A6000, RTX 4090, L40, RTX 5000 Ada, L40S, RTX 6000 Ada, RTX 5090, A100")
 
 
 def work_gpus() -> str:
@@ -142,10 +144,18 @@ def _start_or_reuse_inner(mgr: CloudManager, kind: str, hard_cap_s: float, idle_
         print(f"  reusing idle pod {reuse['pod_id']}")
         return reuse
     s = mgr.settings()
-    choices = cloud.gpu_choices(mgr.rp().gpus(), s["datacenter"], gpus or s["gpu"])
-    mgr.check_budget(max(p for _, p in choices[:4]) * hard_cap_s / 3600)
-    return mgr.start_pod_any(kind, choices[:4], hard_cap_s, idle_min, meta=meta,
-                             report=lambda m: print(f"  {m}", flush=True))
+    deadline = time.time() + float(os.environ.get("GLORE_GPU_WAIT_S", "600"))
+    while True:  # a sold-out datacenter usually frees a GPU within minutes
+        try:
+            choices = cloud.gpu_choices(mgr.rp().gpus(), s["datacenter"], gpus or s["gpu"])
+            mgr.check_budget(max(p for _, p in choices[:4]) * hard_cap_s / 3600)
+            return mgr.start_pod_any(kind, choices[:4], hard_cap_s, idle_min, meta=meta,
+                                     report=lambda m: print(f"  {m}", flush=True))
+        except CloudError as e:
+            if not ("free in" in str(e) or cloud.is_capacity_error(e)) or time.time() > deadline:
+                raise
+            print(f"  no GPU free yet, waiting a minute ({e})", flush=True)
+            time.sleep(60)
 
 
 ENGINE_MODULES = ("__init__", "audio_io", "analysis", "separation", "cleanup", "vocal_lock", "chops", "fx", "mixing")

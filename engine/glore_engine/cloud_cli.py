@@ -293,6 +293,23 @@ def cmd_check(a) -> dict:
     return out
 
 
+def cmd_du(a) -> dict:
+    """What's using the network volume, by folder (read-only)."""
+    vol = cloud.Volume(env_settings())
+    depth = int(a.depth)
+    sizes: dict[str, int] = {}
+    total = 0
+    for k, n in vol.list_sizes(a.prefix or ""):
+        total += n
+        key = "/".join(k.split("/")[:depth])
+        sizes[key] = sizes.get(key, 0) + n
+    rows = sorted(sizes.items(), key=lambda kv: -kv[1])
+    out = {"total_gb": round(total / 2 ** 30, 2),
+           "folders": [{"path": k, "gb": round(v / 2 ** 30, 2)} for k, v in rows if v > 2 ** 20][:60]}
+    print(json.dumps(out, indent=2))
+    return out
+
+
 def cmd_stop(a) -> dict:
     mgr = manager()
     n = 0
@@ -334,10 +351,13 @@ def main(argv: list[str] | None = None) -> int:
     lo.add_argument("--pack", default="house")
     sub.add_parser("stop")
     sub.add_parser("check")
+    du = sub.add_parser("du")
+    du.add_argument("--prefix", default="")
+    du.add_argument("--depth", default=3)
     a = ap.parse_args(argv)
     try:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
-         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check}[a.cmd](a)
+         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

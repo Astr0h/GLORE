@@ -392,9 +392,21 @@ class Volume:
             raise CloudError(_s3_msg(e)) from None
 
     def list_keys(self, prefix: str) -> list[str]:
+        return [k for k, _ in self.list_sizes(prefix)]
+
+    def list_sizes(self, prefix: str) -> list[tuple[str, int]]:
+        """Every key under prefix with its size (pages past S3's 1000-key limit)."""
+        out, token = [], None
         try:
-            r = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
-            return [o["Key"] for o in r.get("Contents", [])]
+            while True:
+                kw = {"Bucket": self.bucket, "Prefix": prefix}
+                if token:
+                    kw["ContinuationToken"] = token
+                r = self.s3.list_objects_v2(**kw)
+                out += [(o["Key"], int(o.get("Size", 0))) for o in r.get("Contents", [])]
+                if not r.get("IsTruncated"):
+                    return out
+                token = r.get("NextContinuationToken")
         except Exception as e:
             raise CloudError(_s3_msg(e)) from None
 

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "status | check | train | generate | fetch | loras | stop"
+        description: "status | check | du | train | generate | fetch | loras | stop"
         required: true
         default: status
       args:

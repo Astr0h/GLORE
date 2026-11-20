@@ -351,6 +351,13 @@ def cmd_link(a) -> dict:
     link waits in the library for GLORE on your PC, which downloads it at home and uploads it."""
     from .linkimport import LinkError, detect_service, fetch_link
     vol = manager().volume()
+    if a.cancel:  # a waiting or failed link, one id or several
+        for rid in [i for i in a.cancel.split(",") if i]:
+            vol.delete(f"{PENDING}/{rid}.json")
+            print(f"Removed {rid}")
+        return {"cancelled": a.cancel}
+    if not a.url:
+        raise CloudError("Give --url (or --cancel)")
     try:
         service = detect_service(a.url)
     except Exception as e:
@@ -369,7 +376,10 @@ def cmd_link(a) -> dict:
             print(f"  {m} {p:.0%}")
     try:
         wav, info, tmp = fetch_link(a.url, report)
-    except LinkError as e:
+    except LinkError as e:  # keep it visible in GLORE Web (with a remove button) instead of failing silently
+        req = {"id": uuid.uuid4().hex[:10], "url": a.url, "kind": a.kind, "service": service, "created": time.time(),
+               "error": str(e), "failed": True}
+        vol.put_bytes(f"{PENDING}/{req['id']}.json", json.dumps(req).encode())
         raise CloudError(str(e)) from e
     try:
         name = f"{info.artist} - {info.title}" if info.artist and info.title else (info.title or "Imported")
@@ -395,6 +405,8 @@ def process_pending_links(vol: cloud.Volume, report=print) -> list[dict]:
     from .linkimport import LinkError, fetch_link
     done = []
     for req in pending_links(vol):
+        if req.get("failed"):  # failed in the cloud for good (e.g. DRM): only shown, never retried
+            continue
         key = f"{PENDING}/{req['id']}.json"
         try:
             wav, info, tmp = fetch_link(req["url"])
@@ -792,7 +804,8 @@ def build_state(mgr: CloudManager, max_jobs: int = 25) -> dict:
             it["media"] = want(it["file"], "preview", f"{it['name']}.mp3")
         library.append(it)
     s = mgr.settings()
-    pending = [{k: r.get(k) for k in ("id", "url", "service", "kind", "created", "error")} for r in pending_links(vol)]
+    pending = [{k: r.get(k) for k in ("id", "url", "service", "kind", "created", "error", "failed")}
+               for r in pending_links(vol)]
     return {"updated": time.time(), "jobs": jobs, "loras": loras, "library": library, "pending": pending,
             "active_pods": mgr.ledger.active(), "month_spend": mgr.month_spend(), "media_branch": MEDIA_BRANCH,
             "monthly_limit": s.get("monthly_limit"), "gpu_pref": s.get("gpu"), "datacenter": s.get("datacenter"),
@@ -948,7 +961,8 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("--name", default="")
     im.add_argument("--kind", default="vocal")
     li = sub.add_parser("link")
-    li.add_argument("--url", required=True)
+    li.add_argument("--url")
+    li.add_argument("--cancel", help="remove waiting/failed link(s) by id, comma-separated")
     li.add_argument("--kind", default="song")
     li.add_argument("--here", action="store_true", help="try downloading on this machine even for YouTube")
     to = sub.add_parser("tool")

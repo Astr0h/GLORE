@@ -658,7 +658,7 @@ const lib = () => {
   const all = (state && state.library) || [], ids = new Set(all.map((i) => i.id));
   let changed = false;
   for (const [id, t] of Object.entries(deleting))  // confirmed gone, or the request is long stale
-    if (!ids.has(id) || Date.now() - t > 20 * 60e3) { delete deleting[id]; changed = true; }
+    if ((!id.startsWith("link:") && !ids.has(id)) || Date.now() - t > 20 * 60e3) { delete deleting[id]; changed = true; }
   if (changed) store.set("deleting", JSON.stringify(deleting));
   return all.filter((i) => !deleting[i.id]);
 };
@@ -690,13 +690,15 @@ function renderLibrary() {
   // working + pending
   const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "tool" && !["done", "error", "stopped"].includes(j.phase));
   const fresh = Object.entries(recentTools).filter(([, t]) => Date.now() - t.at < 25 * 60e3 && !(state && state.updated * 1000 > t.at + 60e3));
-  const pend = (state && state.pending) || [];
+  const pend = ((state && state.pending) || []).filter((r) => !deleting["link:" + r.id]);
   $("#libWorking").innerHTML = (jobs.length || fresh.length || pend.length) ? `<div class="card">
     ${jobs.map((j) => `<div class="working"><span class="dot on"></span>${esc(j.message || "Working")}</div>`).join("")}
     ${!jobs.length ? fresh.map(([, t]) => `<div class="working"><span class="dot on"></span>${esc(t.label)}</div>`).join("") : ""}
-    ${pend.map((r) => `<div class="pending" style="margin-top:6px"><span class="dim">Waiting for your PC:</span> ${esc(r.url)}
-       ${r.error ? `<div class="err">${esc(r.error)}</div>` : ""}</div>`).join("")}
-    <div class="hint">Results show up below when they're done. ${pend.length ? "Links download when GLORE is running on your PC." : ""}</div></div>` : "";
+    ${pend.map((r) => `<div class="pending" style="margin-top:8px;display:flex;gap:10px;align-items:flex-start">
+       <div style="flex:1;min-width:0;overflow-wrap:anywhere"><span class="dim">${r.failed ? "Couldn't download:" : "Waiting for your PC:"}</span> ${esc(r.url)}
+       ${r.error ? `<div class="err">${esc(r.error)}</div>` : ""}</div>
+       <button class="ghost small" data-cancel="${esc(r.id)}">${r.failed ? "Dismiss" : "Cancel"}</button></div>`).join("")}
+    <div class="hint">Results show up below when they're done. ${pend.some((r) => !r.failed) ? "Waiting links download when GLORE is running on your PC." : ""}</div></div>` : "";
   // list
   const items = lib().filter((i) => !libFilter || i.kind === libFilter);
   $("#libList").innerHTML = items.length ? items.map((i) => `<div class="item" data-id="${esc(i.id)}">
@@ -842,6 +844,9 @@ function initLibrary() {
   $("#libFilter").onclick = (e) => { if (e.target.dataset.f === undefined) return; libFilter = e.target.dataset.f;
     document.querySelectorAll("#libFilter .pill").forEach((p) => p.classList.toggle("on", p === e.target)); renderLibrary(); };
   $("#addBtn").onclick = addToLibrary;
+  $("#libWorking").onclick = async (e) => { const id = e.target.dataset.cancel; if (!id) return;
+    deleting["link:" + id] = Date.now(); store.set("deleting", JSON.stringify(deleting)); renderLibrary();
+    try { await dispatch("link", `--cancel ${id}`); } catch (err) { delete deleting["link:" + id]; renderLibrary(); toast(err.message, true); } };
   $("#libList").onclick = (e) => { const b = e.target.closest("button[data-a]"); if (!b) return;
     const item = lib().find((i) => i.id === b.closest(".item").dataset.id);
     if (item) libAction(b.dataset.a, item).catch((err) => toast(err.message, true)); };

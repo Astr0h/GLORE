@@ -359,6 +359,17 @@ def test_youtube_links_wait_for_the_pc(cli, tmp_path, monkeypatch):
     monkeypatch.setattr(linkimport, "fetch_link", broken)
     cloud_cli.process_pending_links(vol, report=lambda m: None)
     assert cloud_cli.pending_links(vol)[0]["error"] == "That track isn't available"
+    # cancel it
+    rid = cloud_cli.pending_links(vol)[0]["id"]
+    assert cloud_cli.main(["link", "--cancel", rid]) == 0 and not cloud_cli.pending_links(vol)
+    # a SoundCloud link that fails in the cloud stays visible, and the PC never retries it
+    assert cloud_cli.main(["link", "--url", "https://soundcloud.com/a/b"]) == 1
+    p = cloud_cli.pending_links(vol)
+    assert len(p) == 1 and p[0]["failed"] and "isn't available" in p[0]["error"]
+    tried = []
+    monkeypatch.setattr(linkimport, "fetch_link", lambda url, progress=None: tried.append(url))
+    cloud_cli.process_pending_links(vol, report=lambda m: None)
+    assert tried == []
 
 
 def test_decrypt_upload_rejects_the_wrong_key():

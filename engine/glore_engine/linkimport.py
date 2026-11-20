@@ -172,6 +172,9 @@ def friendly_error(e: Exception, service: str) -> str:
         return f"{name} says that track doesn't exist - check the link"
     if isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError)) or "Tunnel connection" in msg:
         return f"Couldn't reach {name} - check your internet connection"
+    if "DRM" in msg:
+        return (f"{name} has this track copy-protected (DRM, common on label releases), so it can't be "
+                "downloaded from anywhere. Upload the file instead")
     if "Private video" in msg or "Sign in" in msg:
         return "That video is private or needs a login"
     if "not available" in msg.lower() or "unavailable" in msg.lower():

@@ -95,7 +95,7 @@ def settle_ledger(mgr: CloudManager) -> None:
         mgr.ledger.update(r["pod_id"], ended=min(end or cap_end, cap_end, time.time()))
 
 
-WORK_GPUS = "RTX 4090, L40S, RTX 6000 Ada, RTX 5090, A100"  # songs / tools: plenty for XL-SFT, far cheaper
+WORK_GPUS = "RTX 4090, L40S, RTX 6000 Ada, RTX 5090, A40, RTX A6000, L40, A100"  # songs / tools: plenty for XL-SFT, far cheaper
 
 
 def work_gpus() -> str:
@@ -119,6 +119,16 @@ def _idle_pod(mgr: CloudManager, vol: cloud.Volume) -> dict | None:
 
 def _start_or_reuse(mgr: CloudManager, kind: str, hard_cap_s: float, idle_min: float, meta: dict,
                     gpus: str | None = None) -> dict:
+    try:
+        return _start_or_reuse_inner(mgr, kind, hard_cap_s, idle_min, meta, gpus)
+    except Exception:
+        if meta.get("job"):  # no GPU: don't leave the job queued for some later pod to run by surprise
+            mgr.volume().delete(f"glore/queue/{meta['job']}.json")
+        raise
+
+
+def _start_or_reuse_inner(mgr: CloudManager, kind: str, hard_cap_s: float, idle_min: float, meta: dict,
+                          gpus: str | None = None) -> dict:
     reuse = _idle_pod(mgr, mgr.volume())
     if reuse:
         print(f"  reusing idle pod {reuse['pod_id']}")

@@ -274,6 +274,17 @@ def cmd_check(a) -> dict:
     except Exception as e:
         out["volume_readable"] = False
         out["read_error"] = cloud._s3_msg(e)
+    try:  # can the web app play takes straight from the volume through a time-limited link?
+        import urllib.request
+        vol.put_bytes("glore/test/presign.txt", b"glore-ok")
+        url = vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": "glore/test/presign.txt"},
+                                            ExpiresIn=600)
+        with urllib.request.urlopen(url, timeout=20) as r:
+            body = r.read()
+            out["presigned_links"] = "ok" if body == b"glore-ok" else f"unexpected body {body[:40]!r}"
+            out["presign_cors"] = r.headers.get("Access-Control-Allow-Origin")
+    except Exception as e:
+        out["presigned_links"] = f"failed: {e}"
     try:
         out["runpod_api"] = f"ok, {len(cloud.RunPod(s['api_key']).gpus())} GPU types listed"
     except CloudError as e:

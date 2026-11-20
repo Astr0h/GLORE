@@ -26,6 +26,13 @@ def vocal(bars=8):
     return np.stack([v, v]).astype(np.float32)
 
 
+def vocal_then_break(bars=8):
+    """Sung for the first half, then an instrumental break: where chops belong."""
+    v = vocal(bars)
+    v[:, int(bars / 2 * 4 * BEAT * SR):] = 0
+    return v
+
+
 def drums(n):
     k = np.zeros(n)
     for b in range(int(n / SR / BEAT)):
@@ -37,7 +44,7 @@ def drums(n):
 
 @pytest.mark.parametrize("style", ["house", "rnb", "gospel"])
 def test_chops_render_in_every_style(style):
-    v = vocal()
+    v = vocal_then_break()
     layer, info = chops.make_chops(v, SR, BPM, "A minor", style=style, seed=1)
     assert layer.shape == v.shape and np.isfinite(layer).all()
     assert info.hits > 0 and 0 < float(np.abs(layer).max()) < 1
@@ -56,9 +63,19 @@ def test_chops_answer_the_vocal():
 
 
 def test_house_chops_sit_on_the_16th_grid():
-    v = vocal()
+    v = vocal_then_break()
     _, info = chops.make_chops(v, SR, BPM, "A minor", style="house", seed=4)
     assert info.pattern and all(0 <= h["step"] < 16 and h["tone"] in (0, 1, 2, 3) for h in info.pattern)
+
+
+def test_chops_stay_out_of_the_verses():
+    v = vocal_then_break(16)
+    layer, info = chops.make_chops(v, SR, BPM, "A minor", style="house", seed=1)
+    bar = int(4 * BEAT * SR)
+    sung = np.abs(layer[:, : 8 * bar]).mean()
+    brk = np.abs(layer[:, 8 * bar:]).mean()
+    assert brk > 4 * sung                         # the riff lives in the break, not under the vocal
+    assert info.roles[:8].count("riff") == 0 and info.roles[8:].count("riff") >= 6
 
 
 SONG = Path(__file__).with_name("song_fixture.py")

@@ -76,6 +76,7 @@ class ChopInfo:
     notes: list = field(default_factory=list)
     chords: list = field(default_factory=list)
     pattern: list = field(default_factory=list)
+    roles: list = field(default_factory=list)
 
     @property
     def slices(self) -> int:
@@ -207,6 +208,9 @@ def find_hook(y: np.ndarray, bpm: float, chorus_s: list[tuple[float, float]]) ->
 # ---------------------------------------------------------------- 2. the beat's chords
 
 TRIADS = {"": (0, 4, 7), "m": (0, 3, 7)}
+# 1-bar chop rhythms on 16ths, the kind house records loop: x = hit
+RIFFS = ("x..x..x...x..x..", "..x...x...x...x.", "x.x...x.x...x...", "x..x..x.x..x..x.", "x...x.x...x.x...",
+         "..x..x....x..x..")
 
 
 def parse_key(key: str | None) -> tuple[int, str]:
@@ -381,11 +385,31 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
         return cache[k]
 
     lead = voice[0] if voice else Note(hook[0], hook[1], 60.0)
+    # where the chops play - like a producer would use them, not everywhere:
+    #   riff  instrumental bars (intro build, drops, breaks, outro): the full chop riff
+    #   light chorus bars: stay out of the vocal's way, only the stutter into the next section
+    #   off   verses: the vocal carries those
+    first_v = next((b for b in range(n_bars) if act[b] > 0.3), n_bars)
+    role = []
+    for b in range(n_bars):
+        if act[b] < 0.3:
+            role.append("tease" if b < first_v - 4 else "riff")
+        elif any(a <= b < e for a, e in regions):
+            role.append("light")
+        else:
+            role.append("off")
+    info.roles = role
     centre = lead.midi + st.octave + 6 * (pitch_spread - 1)
     steps = int(round(4 / st.step_beats))
-    groove = [rng.random() < min(0.95, st.density * density * (1.3 if s % max(1, steps // 4) == 0 else 0.85))
-              for s in range(steps * 2)]                       # a 2-bar groove
-    tones = [rng.choice((0, 1, 2, 3)) for _ in range(steps * 2)]
+    if steps == 16:  # one classic 1-bar chop rhythm, repeated - a riff you can hum, not random hits
+        riff = rng.choice(RIFFS)
+        groove = [c == "x" for c in riff] * 2
+        keep = min(1.0, density)                        # less density = drop some hits, never add random ones
+        groove = [g and (i % 4 == 0 or rng.random() < keep) for i, g in enumerate(groove)]
+    else:
+        groove = [rng.random() < min(0.95, st.density * density * (1.3 if s % max(1, steps // 4) == 0 else 0.85))
+                  for s in range(steps * 2)]
+    tones = [rng.choice((0, 1, 2, 3)) for _ in range(steps)] * 2   # the same melody shape each bar
     under = st.under_vocal if duck_under_vocal is None else 1.0 - duck_under_vocal
     voicing = (0, 1, 2)
     first_vocal = next((b for b in range(n_bars) if act[b] > 0.3), n_bars)
@@ -393,12 +417,15 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
     for b in range(n_bars):
         t0 = offset + b * bar_s
         chord = chords[b]
-        if b and b % 8 == 0:   # every 8 bars: change a little, so it moves with the song
-            groove = [g if rng.random() > 0.2 else not g for g in groove]
-            tones = [t if rng.random() > 0.3 else rng.choice((0, 1, 2, 3)) for t in tones]
+        if b and b % 8 == 0 and rng.random() < 0.5:   # now and then a small variation on the last beat only
+            for i in list(range(steps - steps // 4, steps)) + list(range(2 * steps - steps // 4, 2 * steps)):
+                if rng.random() < 0.4:
+                    groove[i] = not groove[i]
         level = 1.0  # ducking under the vocal happens below, following the vocal moment to moment
         in_chorus = any(a <= b < e for a, e in regions)
-        if style == "gospel" and voice:
+        if role[b] in ("off", "light", "tease"):
+            pass
+        elif style == "gospel" and voice:
             if b % 4 == 0:                              # a new voicing every 4 bars (the seed decides)
                 voicing = rng.choice(((0, 1, 2), (1, 2, 3), (2, 3, 1), (0, 2, 3)))
             for i, n in enumerate(voice[:3]):          # each voice sings a chord tone: a stacked chord
@@ -416,12 +443,14 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
                 else:
                     x = sing(lead, chord_tone(chord, tones[gi], centre), gate, st.tail)
                 play(x, t0 + s * st.step_beats * beat, level)
-                if b < 2:
+                if len(info.pattern) < 64:   # the first few bars of the riff, for display and tests
                     info.pattern.append({"bar": b, "step": s, "tone": tones[gi]})
-        if hook and b < first_vocal and b % 4 == 3:        # tease the hook in the intro
+        if hook and role[b] == "tease" and b % 4 == 3:        # tease the hook in the intro
             seg = cut(*hook)
             play(seg * _env(seg.shape[1], sr, 0.3), t0 + 2 * beat, 0.8)
-        if hook and st.stutter_every and b % st.stutter_every == st.stutter_every - 1 and (in_chorus or act[b] < 0.3):
+        last_of_part = b + 1 >= n_bars or role[b + 1] != role[b]
+        if hook and st.stutter_every and role[b] in ("light", "riff") and (last_of_part or (
+                role[b] == "riff" and b % (2 * st.stutter_every) == 2 * st.stutter_every - 1)):
             piece = cut(hook[0], hook[0] + beat / 2)       # "I-I-I-I want" into the next bar
             for k in range(4):
                 p = piece[:, :int(beat / 4 * sr)] if k < 3 else piece

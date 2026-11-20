@@ -647,6 +647,7 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
     if takes and not any("mp3" in r for r in results):
         raise RuntimeError(results[0].get("error") or "nothing rendered")
     return {"takes": results, "variant": variant, "bpm": bpm, "key": key, "duration": a["duration"],
+            "gh_run": job.get("gh_run"),
             "kind": job.get("kind", "vocal")}
 
 

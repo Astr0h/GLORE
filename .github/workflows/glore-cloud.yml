@@ -75,7 +75,8 @@ jobs:
         if: always() && env.GLORE_WEB_KEY != ''
         run: |
           set -e
-          python -m glore_engine.cloud_cli publish-state --out "$RUNNER_TEMP/state/state.json"
+          python -m glore_engine.cloud_cli publish-state --out "$RUNNER_TEMP/state/state.json" \
+            --media-remote "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
           cd "$RUNNER_TEMP/state"
           git init -q -b glore-state
           git add state.json

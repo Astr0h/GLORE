@@ -516,7 +516,7 @@ def cmd_song(a) -> dict:
             t["lora_dir"] = resolve_lora(vol, t.get("pack", "house"), t["lora"])
             t.setdefault("trigger", f"glore_{t.get('pack', 'house')}")
     sync_scripts(vol)
-    job = {"id": job_id, "mode": "song", "kind": a.kind, "variant": a.variant,
+    job = {"id": job_id, "mode": "song", "kind": a.kind, "variant": a.variant, "gh_run": os.environ.get("GITHUB_RUN_ID"),
            **({"item": item_id} if item_id else {"upload": a.source}),
            "fx": a.fx, "reverb": a.reverb, "delay": a.delay, "chops": a.chops or None,
            "chops_density": a.chops_density, "vocal_db": a.vocal_db, "beat_db": a.beat_db, "chops_db": a.chops_db,
@@ -711,12 +711,39 @@ def encrypt_state(data: dict, passphrase: str) -> dict:
     return {"v": 1, "kdf": "pbkdf2-sha256", "iter": 200_000, "salt": b64(salt), "iv": b64(iv), "ct": b64(ct)}
 
 
-def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> dict:
+MEDIA_BRANCH = "glore-media"
+MEDIA_MAX_BYTES = 95 * 2 ** 20   # GitHub refuses files over 100 MB
+MEDIA_TAKE_JOBS = 12             # newest song/generate jobs whose audio is playable in the app
+MEDIA_LIBRARY = 60               # newest library items with a playable preview
+
+
+def media_name(key: str, kind: str) -> str:
+    return hashlib.sha256(f"{key}|{kind}".encode()).hexdigest()[:24] + ".bin"
+
+
+def encrypt_blob(data: bytes, passphrase: str) -> bytes:
+    """Same format as GLORE Web's uploads: salt(16) | iv(12) | AES-GCM ciphertext."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt, iv = os.urandom(16), os.urandom(12)
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, 200_000, dklen=32)
+    return salt + iv + AESGCM(key).encrypt(iv, data, None)
+
+
+def build_state(mgr: CloudManager, max_jobs: int = 25) -> dict:
+    """Everything GLORE Web shows. Audio is referenced by `media` names: encrypted copies on the
+    glore-media branch (RunPod's storage only takes signed requests, so a phone can't stream from it)."""
     vol = mgr.volume()
     try:
         settle_ledger(mgr)
     except CloudError:
         pass  # a full volume can't take ledger writes; report what we can
+    wanted: list[dict] = []
+
+    def want(key: str, kind: str, filename: str) -> str:
+        name = media_name(key, kind)
+        wanted.append({"name": name, "key": key, "kind": kind, "filename": filename})
+        return name
+
     jobs = []
     for jid in sorted({k.split("/")[2] for k in vol.list_keys("glore/runs/") if k.endswith("status.json")}):
         st = job_status(vol, jid)
@@ -724,19 +751,8 @@ def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> di
                                        "eta_s", "started", "heartbeat", "gpu", "error")}
         res = st.get("result") or {}
         if st.get("mode") in ("generate", "song"):
-            link = lambda k: vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": k},
-                                                           ExpiresIn=link_days * 86400)
-            takes = []
-            for t in res.get("takes", []):
-                t = dict(t)
-                if t.get("mp3"):
-                    t["url"] = link(t["mp3"])
-                if t.get("beat_mp3"):
-                    t["beat_url"] = link(t["beat_mp3"])
-                if t.get("zip"):
-                    t["zip_url"] = link(t["zip"])
-                takes.append(t)
-            row["takes"] = takes
+            row["takes"] = [dict(t) for t in res.get("takes", [])]
+            row["gh_run"] = res.get("gh_run")
             if st.get("mode") == "song":
                 row.update({k: res.get(k) for k in ("bpm", "key", "duration", "kind")})
         elif st.get("mode") == "tool":
@@ -746,6 +762,13 @@ def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> di
             row["run_id"] = res.get("lora_dir", "").split("/")[2] if res.get("lora_dir") else None
         jobs.append(row)
     jobs.sort(key=lambda r: r.get("started") or 0, reverse=True)
+    jobs = jobs[:max_jobs]
+    for row in [j for j in jobs if j.get("takes")][:MEDIA_TAKE_JOBS]:
+        for t in row["takes"]:
+            for field, kind, suffix in (("mp3", "full", ""), ("beat_mp3", "full", ""), ("zip", "full", "")):
+                if t.get(field):
+                    t[{"mp3": "media", "beat_mp3": "beat_media", "zip": "zip_media"}[field]] = \
+                        want(t[field], kind, Path(t[field]).name)
     loras = {}
     for k in vol.list_keys("loras/"):
         parts = k.split("/")
@@ -756,23 +779,94 @@ def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> di
         if name:
             loras.setdefault(parts[2], {"pack": parts[1], "points": []})["points"].append(name)
     library = []
-    for it in library_items(vol)[:200]:
+    for n, it in enumerate(library_items(vol)[:200]):
         it = dict(it)
-        it["url"] = vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": it["file"]},
-                                                  ExpiresIn=link_days * 86400)
+        if n < MEDIA_LIBRARY:
+            it["media"] = want(it["file"], "preview", f"{it['name']}.mp3")
         library.append(it)
     s = mgr.settings()
     pending = [{k: r.get(k) for k in ("id", "url", "service", "kind", "created", "error")} for r in pending_links(vol)]
-    return {"updated": time.time(), "jobs": jobs[:max_jobs], "loras": loras, "library": library, "pending": pending,
-            "active_pods": mgr.ledger.active(), "month_spend": mgr.month_spend(),
-            "monthly_limit": s.get("monthly_limit"), "gpu_pref": s.get("gpu"), "datacenter": s.get("datacenter")}
+    return {"updated": time.time(), "jobs": jobs, "loras": loras, "library": library, "pending": pending,
+            "active_pods": mgr.ledger.active(), "month_spend": mgr.month_spend(), "media_branch": MEDIA_BRANCH,
+            "monthly_limit": s.get("monthly_limit"), "gpu_pref": s.get("gpu"), "datacenter": s.get("datacenter"),
+            "_media": wanted}
+
+
+def _git(repo: Path, *args: str, input: bytes | None = None, check: bool = True) -> str:
+    import subprocess
+    r = subprocess.run(["git", *args], cwd=repo, input=input, capture_output=True)
+    if check and r.returncode:
+        raise CloudError(f"git {args[0]} failed: {r.stderr.decode(errors='replace')[-400:]}")
+    return r.stdout.decode(errors="replace")
+
+
+def publish_media(vol: cloud.Volume, wanted: list[dict], passphrase: str, remote: str, workdir: Path,
+                  report=print) -> dict:
+    """Make the glore-media branch hold exactly the wanted files, encrypted. Files already there are
+    kept as they are (no re-download, no re-upload); the branch is one commit, so old audio doesn't pile up."""
+    import subprocess
+    repo = workdir / "media-repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q")
+    have: dict[str, str] = {}
+    if not subprocess.run(["git", "fetch", "-q", "--depth", "1", "--filter=blob:none", remote,
+                           f"{MEDIA_BRANCH}:refs/remotes/origin/{MEDIA_BRANCH}"], cwd=repo, capture_output=True).returncode:
+        for line in _git(repo, "ls-tree", f"origin/{MEDIA_BRANCH}").splitlines():
+            meta, name = line.split("\t", 1)
+            have[name] = meta.split()[2]
+    entries, added, skipped = {}, 0, 0
+    seen = set()
+    for w in wanted:
+        if w["name"] in seen:
+            continue
+        seen.add(w["name"])
+        if w["name"] in have:
+            entries[w["name"]] = have[w["name"]]
+            continue
+        size = vol.size(w["key"])
+        if not size:
+            continue
+        if w["kind"] == "full" and size > MEDIA_MAX_BYTES:
+            skipped += 1
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / ("src" + Path(w["key"]).suffix)
+            vol.download(w["key"], src)
+            if w["kind"] == "preview":
+                out = Path(tmp) / "preview.mp3"
+                subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), "-vn", "-c:a", "libmp3lame",
+                                "-b:a", "192k", str(out)], check=True)
+                src = out
+            blob = Path(tmp) / "blob"
+            blob.write_bytes(encrypt_blob(src.read_bytes(), passphrase))
+            entries[w["name"]] = _git(repo, "hash-object", "-w", str(blob)).strip()
+            added += 1
+    if set(entries.items()) == set(have.items()):
+        report(f"media: nothing new ({len(entries)} files)")
+        return {"files": len(entries), "added": 0}
+    index = "".join(f"100644 blob {sha}\t{name}\n" for name, sha in sorted(entries.items()))
+    tree = _git(repo, "mktree", "--missing", input=index.encode()).strip()
+    commit = _git(repo, "-c", "user.name=glore-bot", "-c", "user.email=glore-bot@users.noreply.github.com",
+                  "commit-tree", tree, "-m", "GLORE media (encrypted)").strip()
+    _git(repo, "push", "-q", "-f", remote, f"{commit}:refs/heads/{MEDIA_BRANCH}")
+    report(f"media: {len(entries)} files, {added} new, {len(have) - len(set(have) & set(entries))} removed"
+           + (f", {skipped} too big for GitHub" if skipped else ""))
+    return {"files": len(entries), "added": added, "skipped": skipped}
 
 
 def cmd_publish_state(a) -> dict:
     key = os.environ.get("GLORE_WEB_KEY", "")
     if not key:
         raise CloudError("Add a GLORE_WEB_KEY repo secret (any long passphrase) to use GLORE Web")
-    state = build_state(manager())
+    mgr = manager()
+    state = build_state(mgr)
+    wanted = state.pop("_media")
+    if a.media_remote:
+        try:
+            done = publish_media(mgr.volume(), wanted, key, a.media_remote, Path(a.out).parent / "work")
+            state["media_files"] = done["files"]
+        except Exception as e:  # the status still goes out; audio catches up next run
+            print(f"  media publish failed: {e}")
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(encrypt_state(state, key)), encoding="utf-8")
     print(json.dumps({"jobs": len(state["jobs"]), "loras": len(state["loras"]), "written": a.out}))
@@ -892,6 +986,7 @@ def main(argv: list[str] | None = None) -> int:
     gr.add_argument("--gb", type=int, required=True)
     ps = sub.add_parser("publish-state")
     ps.add_argument("--out", default="state/state.json")
+    ps.add_argument("--media-remote", help="git remote to publish encrypted audio to (branch glore-media)")
     du = sub.add_parser("du")
     du.add_argument("--prefix", default="")
     du.add_argument("--depth", default=3)

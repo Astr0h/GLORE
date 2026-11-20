@@ -121,7 +121,9 @@ a { color: var(--accent); }
   padding: 14px; margin: 0; transition: border-color .15s, color .15s; }
 .drop:hover, .drop.has { border-color: var(--accent); color: var(--text); }
 .beat-link { font-size: 12px; }
-.links { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; }
+.links { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; align-items: center; }
+.links button, .links a.btnlink { padding: 6px 10px; font-size: 12px; border-radius: 8px; font-weight: 500; }
+.playbtn { width: 100%; padding: 11px; border-radius: 10px; font-weight: 600; }
 .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 12px; margin-bottom: 4px; }
 .seg span { text-align: center; padding: 8px; border-radius: 9px; font-size: 13px; color: var(--dim); cursor: pointer; font-weight: 500; }
@@ -377,6 +379,7 @@ async function gh(path, opts = {}) {
   if (r.status === 401) throw new Error("GitHub refused the token");
   if (r.status === 404 && path.includes("glore-state")) return null;
   if (!r.ok) { let m = ""; try { m = (await r.json()).message; } catch {} throw new Error(m || `GitHub error ${r.status}`); }
+  if (opts.binary) return r.arrayBuffer();
   return opts.accept && opts.accept.includes("raw") ? r.text() : (r.status === 204 ? null : r.json());
 }
 async function defaultRef() {
@@ -401,6 +404,50 @@ async function decrypt(env) {
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64(env.iv) }, key, b64(env.ct));
   return JSON.parse(new TextDecoder().decode(pt));
 }
+
+// ------------------------------------------------------------- audio: encrypted files on the glore-media branch
+const mediaCache = new Map();
+async function decryptBlob(buf) {
+  const b = new Uint8Array(buf), salt = b.subarray(0, 16), iv = b.subarray(16, 28);
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(cfg.key), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 200000 }, base,
+    { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, b.subarray(28));
+}
+async function mediaUrl(name, type = "audio/mpeg") {
+  if (mediaCache.has(name)) return mediaCache.get(name);
+  const p = (async () => {
+    const buf = await gh(`/contents/${name}?ref=${(state && state.media_branch) || "glore-media"}`,
+                         { accept: "application/vnd.github.raw+json", binary: true });
+    return URL.createObjectURL(new Blob([await decryptBlob(buf)], { type }));
+  })();
+  mediaCache.set(name, p);
+  p.catch(() => mediaCache.delete(name));
+  return p;
+}
+const player = (name, label = "Play") => name
+  ? `<div class="player" data-media="${esc(name)}"><button class="ghost playbtn">▶ ${label}</button></div>`
+  : `<div class="hint">Audio appears here after the next cloud refresh (tap ↻).</div>`;
+const dl = (name, fn, label) => name ? `<button class="ghost dlbtn" data-media="${esc(name)}" data-fn="${esc(fn)}">${label}</button>` : "";
+document.addEventListener("click", async (e) => {
+  const pb = e.target.closest(".playbtn"), db = e.target.closest(".dlbtn");
+  if (!pb && !db) return;
+  const box = (pb || db), name = box.closest("[data-media]").dataset.media, old = box.textContent;
+  box.disabled = true; box.textContent = "Loading…";
+  try {
+    const url = await mediaUrl(name, db && /\.zip$/i.test(db.dataset.fn) ? "application/zip" : "audio/mpeg");
+    if (pb) {
+      const a = document.createElement("audio"); a.controls = true; a.src = url;
+      pb.parentElement.replaceChildren(a); a.play().catch(() => {});
+    } else {
+      const a = document.createElement("a"); a.href = url; a.download = db.dataset.fn; document.body.appendChild(a); a.click(); a.remove();
+      box.textContent = old; box.disabled = false;
+    }
+  } catch (err) {
+    toast(/404|Not Found/i.test(err.message) ? "That audio isn't uploaded yet: tap ↻ and try again in a minute" : err.message, true);
+    box.textContent = old; box.disabled = false;
+  }
+});
 
 // ------------------------------------------------------------- data
 async function loadState() {
@@ -454,12 +501,13 @@ function renderTakes() {
     const tag = j.mode === "song" ? `Song${j.bpm ? ` · ${Math.round(j.bpm)} BPM` : ""}${j.key ? ` · ${esc(j.key)}` : ""} · ` : "";
     const head = `<div class="take-top"><span class="dim mono">${tag}${when}</span><span class="spacer"></span>${statusBadge(j.phase)}</div>`;
     if (j.phase !== "done") return `<div class="card">${head}<div class="cap" style="margin-top:8px">${esc(j.message || "")}</div></div>`;
-    const takes = (j.takes || []).map((t) => t.url ? `<div class="take">
-        <div class="take-top"><b>${esc(t.name)}</b><span class="spacer"></span><span class="faint mono">seed ${esc(t.seed ?? "")}</span>
-          <a class="ghost small" style="text-decoration:none;color:var(--text)" href="${esc(t.url)}" target="_blank" rel="noopener">MP3</a></div>
-        <audio controls preload="none" src="${esc(t.url)}"></audio>
-        ${t.beat_url || t.zip_url ? `<div class="links">${t.beat_url ? `<a href="${esc(t.beat_url)}" target="_blank" rel="noopener">Beat only ↗</a>` : ""}
-          ${t.zip_url ? `<a href="${esc(t.zip_url)}" target="_blank" rel="noopener">Stems ZIP (WAV) ↗</a>` : ""}</div>` : ""}
+    const takes = (j.takes || []).map((t) => t.mp3 ? `<div class="take">
+        <div class="take-top"><b>${esc(t.name)}</b><span class="spacer"></span><span class="faint mono">seed ${esc(t.seed ?? "")}</span></div>
+        ${player(t.media)}
+        <div class="links">${dl(t.media, t.name + ".mp3", "Save MP3")}
+          ${t.beat_media ? `<span data-media="${esc(t.beat_media)}" style="display:contents">${dl(t.beat_media, t.name + " (beat).mp3", "Beat only")}</span>` : ""}
+          ${t.zip_media ? dl(t.zip_media, t.name + " (stems).zip", "Stems ZIP (WAV)")
+            : t.zip && j.gh_run ? `<a class="ghost btnlink" style="text-decoration:none;color:var(--text)" href="https://github.com/${esc(cfg.repo)}/actions/runs/${esc(j.gh_run)}" target="_blank" rel="noopener">Stems ZIP on GitHub ↗</a>` : ""}</div>
         ${t.planned_caption ? `<div class="cap">${esc(t.planned_caption)}</div>` : ""}</div>`
       : `<div class="take"><b>${esc(t.name)}</b><div class="cap" style="color:var(--danger)">${esc(t.error || "failed")}</div></div>`).join("");
     return `<div class="card">${head}<div style="margin-top:12px">${takes}</div></div>`;
@@ -635,7 +683,7 @@ function renderLibrary() {
   $("#libList").innerHTML = items.length ? items.map((i) => `<div class="item" data-id="${esc(i.id)}">
       <div class="item-top"><b title="${esc(i.name)}">${esc(i.name)}</b><span class="tag ${esc(i.kind)}">${esc(KIND_LABEL[i.kind] || i.kind)}</span></div>
       <div class="meta">${esc(itemMeta(i)) || "&nbsp;"}</div>
-      <audio controls preload="none" src="${esc(i.url)}"></audio>
+      ${player(i.media)}
       <div class="acts-row">
         ${["vocal", "song"].includes(i.kind) ? `<button class="use" data-a="use">Use in song</button>` : ""}
         ${i.kind !== "chops" && i.kind !== "stem" ? `<button class="ghost" data-a="stems">Stems</button>` : ""}
@@ -643,7 +691,7 @@ function renderLibrary() {
         <button class="ghost" data-a="analyse">${i.bpm ? "Re-analyse" : "BPM & key"}</button>
         <button class="ghost" data-a="lock">Tempo / pitch</button>
         ${i.kind === "vocal" ? `<button class="ghost" data-a="chops">Chops</button>` : ""}
-        <a class="ghost small" style="text-decoration:none;color:var(--text);padding:6px 10px;font-size:12px" href="${esc(i.url)}" download target="_blank" rel="noopener">Save</a>
+        ${i.media ? `<span data-media="${esc(i.media)}" style="display:contents">${dl(i.media, i.name + ".mp3", "Save")}</span>` : ""}
         <button class="ghost" data-a="delete" style="color:var(--danger)">Delete</button>
       </div></div>`).join("")
     : `<div class="empty">${lib().length ? "Nothing of that kind yet." : "Your library is empty. Add a vocal, a song or a link above."}</div>`;

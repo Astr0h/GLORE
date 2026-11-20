@@ -132,34 +132,56 @@ def test_env_settings_need_the_secrets(monkeypatch):
     assert s["datacenter"] == "EUR-IS-1" and "A100" in s["gpu"] and s["monthly_limit"] == 30
 
 
-def test_state_for_the_web_app_is_encrypted_and_has_play_links(cli, tmp_path, monkeypatch):
+def test_state_is_encrypted_and_audio_goes_to_the_media_branch(cli, tmp_path, monkeypatch):
     import base64
     import hashlib
+    import subprocess
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     vol = cli["vol"]
-
-    class FakeS3:
-        def generate_presigned_url(self, op, Params, ExpiresIn):
-            return f"https://s3.example/{Params['Key']}?X-Expires={ExpiresIn}"
-    vol.s3, vol.bucket = FakeS3(), "vol123"
     vol.put_bytes("loras/house/runX/final/adapter_model.safetensors", b"w")
     vol.put_bytes("loras/house/runX/checkpoints/epoch_50_loss_0.9/adapter_model.safetensors", b"w")
     takes = [{"name": "t1", "caption": "warm house", "lora": "runX@e50", "seed": 1, "duration": 30}]
     tf = tmp_path / "takes.json"
     tf.write_text(json.dumps(takes))
     assert cloud_cli.main(["generate", "--takes", str(tf), "--wait", "--out", str(tmp_path / "o")]) == 0
+    src = tmp_path / "v.wav"
+    src.write_bytes(tiny_wav())
+    item = cloud_cli.library_add(vol, src, "My vocal", "vocal", "upload")
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     monkeypatch.setenv("GLORE_WEB_KEY", "correct horse battery staple")
     out = tmp_path / "state" / "state.json"
-    assert cloud_cli.main(["publish-state", "--out", str(out)]) == 0
+    assert cloud_cli.main(["publish-state", "--out", str(out), "--media-remote", str(remote)]) == 0
     enc = json.loads(out.read_text())
     assert "warm house" not in out.read_text() and "\"t1\"" not in out.read_text()
     d = lambda k: base64.b64decode(enc[k])
     key = hashlib.pbkdf2_hmac("sha256", b"correct horse battery staple", d("salt"), enc["iter"], dklen=32)
     state = json.loads(AESGCM(key).decrypt(d("iv"), d("ct"), None))
     gen = next(j for j in state["jobs"] if j["mode"] == "generate")
-    assert gen["phase"] == "done" and gen["takes"][0]["url"].startswith("https://s3.example/outputs/")
-    assert gen["takes"][0]["url"].endswith(str(7 * 86400))
+    assert gen["phase"] == "done" and "_media" not in state and state["media_files"] == 2
     assert sorted(state["loras"]["runX"]["points"]) == ["e50", "final"]
+    # the take and a preview of the library item are on the media branch, encrypted
+    files = subprocess.run(["git", "--git-dir", str(remote), "ls-tree", "--name-only", "glore-media"],
+                           capture_output=True, text=True, check=True).stdout.split()
+    lib = state["library"][0]
+    assert sorted(files) == sorted([gen["takes"][0]["media"], lib["media"]])
+    blob = subprocess.run(["git", "--git-dir", str(remote), "show", f"glore-media:{gen['takes'][0]['media']}"],
+                          capture_output=True, check=True).stdout
+    assert cloud_cli.decrypt_upload(blob, "correct horse battery staple") == vol.get_bytes(gen["takes"][0]["mp3"])
+    prev = subprocess.run(["git", "--git-dir", str(remote), "show", f"glore-media:{lib['media']}"],
+                          capture_output=True, check=True).stdout
+    assert cloud_cli.decrypt_upload(prev, "correct horse battery staple")[:3] in (b"ID3", b"\xff\xfb", b"\xff\xf3")
+    # a second publish re-uses what's there (no new commit); deleting the item drops its preview
+    head = lambda: subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "glore-media"], capture_output=True,
+                                  text=True).stdout
+    h1 = head()
+    assert cloud_cli.main(["publish-state", "--out", str(out), "--media-remote", str(remote)]) == 0
+    assert head() == h1
+    assert cloud_cli.main(["library", "--delete", item["id"]]) == 0
+    assert cloud_cli.main(["publish-state", "--out", str(out), "--media-remote", str(remote)]) == 0
+    files = subprocess.run(["git", "--git-dir", str(remote), "ls-tree", "--name-only", "glore-media"],
+                           capture_output=True, text=True, check=True).stdout.split()
+    assert files == [gen["takes"][0]["media"]]
 
 
 def test_publish_state_needs_the_web_key(cli, monkeypatch, capsys):
@@ -299,7 +321,7 @@ def test_tools_add_results_to_the_library(cli, tmp_path, monkeypatch):
     # state for the web app lists the library with play links, and the tool jobs
     vol.s3, vol.bucket = FakeS3(), "vol123"
     st = cloud_cli.build_state(cli["mgr"])
-    assert len(st["library"]) == 7 and all(i["url"] for i in st["library"])
+    assert len(st["library"]) == 7 and all(i["media"] for i in st["library"])
     assert {j.get("op") for j in st["jobs"]} >= {"stems", "analyse", "chops", "clean"}
     # delete
     assert cloud_cli.main(["library", "--delete", song["id"]]) == 0

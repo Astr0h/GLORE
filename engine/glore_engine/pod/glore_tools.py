@@ -153,6 +153,14 @@ def op_chops(job, root, work, item, p):
                               bpm=bpm, style=style, seed=seed, hits=info.hits)]}
 
 
+def beat_offset(beat, bpm: float) -> float:
+    """Where the beat grid starts (first beat, folded into one beat length)."""
+    import librosa
+    y = librosa.resample(beat.mean(0), orig_sr=SR, target_sr=22050)
+    _, beats = librosa.beat.beat_track(y=y, sr=22050, start_bpm=bpm, units="time")
+    return float(beats[0] % (60.0 / bpm)) if len(beats) else 0.0
+
+
 def op_mixsong(job, root, work, item, p):
     """p: take, vocal, bpm, key, fx, reverb, delay, chops (style or ''), chops_seed, vocal_db, beat_db,
     chops_db, out_base (path without extension), stems (bool)."""
@@ -167,10 +175,18 @@ def op_mixsong(job, root, work, item, p):
     music = {k: load(v) for k, v in parts.items() if k != "vocals"}
     dry = load(to_wav(p["vocal"], work / "vocal.wav"))
     wet = vocal_fx(dry, SR, p.get("fx", "clean"), bpm, float(p.get("reverb", 0.5)), float(p.get("delay", 0.5)))
-    chops = None
+    chops, chop_info = None, None
     if p.get("chops"):
-        chops, _ = make_chops(dry, SR, bpm, p.get("key"), style=p["chops"], seed=int(p.get("chops_seed", 0)),
-                              density=float(p.get("chops_density", 1)))
+        beat_mix = sum(music.values())
+        structure = None
+        if p.get("music"):  # a full song: its own arrangement shows where the chorus is
+            m = load(to_wav(p["music"], work / "orig_music.wav"))
+            n = min(m.shape[1], dry.shape[1])
+            structure = m[:, :n] + dry[:, :n]
+        chops, info = make_chops(dry, SR, bpm, p.get("key"), style=p["chops"], seed=int(p.get("chops_seed", 0)),
+                                 density=float(p.get("chops_density", 1)), offset=beat_offset(beat_mix, bpm),
+                                 harmony=beat_mix, structure=structure)
+        chop_info = {"chorus": info.chorus, "hook": info.hook, "chords": info.chords[:16], "hits": info.hits}
     song, out = mix_song(music, wet, SR, bpm, chops=chops, vocal_db=float(p.get("vocal_db", 0)),
                          beat_db=float(p.get("beat_db", 0)), chops_db=float(p.get("chops_db", 0)))
     base = Path(p["out_base"])
@@ -180,7 +196,7 @@ def op_mixsong(job, root, work, item, p):
     beat = sum(v for k, v in out.items() if k not in ("vocal",))
     beat = beat * (0.89 / max(1e-6, float(np.max(np.abs(beat)))))
     ffmpeg("-i", str(save(work / "beat.wav", beat)), "-c:a", "libmp3lame", "-b:a", "320k", f"{base} (beat).mp3")
-    res = {"mp3": f"{base}.mp3", "beat_mp3": f"{base} (beat).mp3"}
+    res = {"mp3": f"{base}.mp3", "beat_mp3": f"{base} (beat).mp3", "chops": chop_info}
     if p.get("stems", True):
         z = Path(f"{base} (stems).zip")
         with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:

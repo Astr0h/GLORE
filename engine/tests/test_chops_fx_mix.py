@@ -58,8 +58,32 @@ def test_chops_answer_the_vocal():
 def test_house_chops_sit_on_the_16th_grid():
     v = vocal()
     _, info = chops.make_chops(v, SR, BPM, "A minor", style="house", seed=4)
-    assert info.pattern and all(0 <= h["step"] < 32 for h in info.pattern)
-    assert all(h["pitch"] in (0, 5, 7, 12) for h in info.pattern)
+    assert info.pattern and all(0 <= h["step"] < 16 and h["tone"] in (0, 1, 2, 3) for h in info.pattern)
+
+
+SONG = Path(__file__).with_name("song_fixture.py")
+
+
+def test_finds_the_chorus_reads_the_chords_and_plays_in_tune():
+    import importlib.util
+    import librosa
+    spec = importlib.util.spec_from_file_location("song_fixture", SONG)
+    s = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(s)
+    v, h = np.stack([s.voc, s.voc]), np.stack([s.harm, s.harm])
+    layer, info = chops.make_chops(v, s.SR, s.BPM, "A minor", style="house", seed=3, harmony=h, structure=v + h)
+    found = {b for a, e in info.chorus for b in range(int(round(a / s.BAR)), int(round(e / s.BAR)))}
+    true = set(s.chorus_bars)
+    assert len(found & true) >= 0.8 * len(true) and len(found - true) <= 2
+    assert info.chords[:4] == ["Am", "F", "C", "G"]
+    assert info.notes and all(n["chorus"] for n in info.notes)          # held notes come from the chorus
+    hs, he = info.hook
+    assert any(a <= (hs + he) / 2 < e for a, e in info.chorus)           # so does the hook
+    y = librosa.resample(layer.mean(0), orig_sr=s.SR, target_sr=22050)
+    f0, vo, _ = librosa.pyin(y, fmin=100, fmax=2000, sr=22050, hop_length=512)
+    pcs = np.round(librosa.hz_to_midi(f0[vo])) % 12
+    chord_notes = {9, 0, 4, 5, 7, 11, 2}                                  # Am F C G
+    assert np.isin(pcs, list(chord_notes)).mean() > 0.8
 
 
 def test_silence_makes_no_chops():

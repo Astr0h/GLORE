@@ -635,10 +635,10 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
             g = _run_tool(ace, "glore_generate.py", [str(tw / "job.json")], log)
             status.update(message=f"Mixing {name}: your vocal, FX{', chops' if mixp.get('chops') else ''}, sidechain")
             m = _tool(ace, "mixsong", root, tw / "mix", log, params={
-                **mixp, "take": g["files"][0]["path"], "vocal": a["vocal"], "bpm": bpm, "key": key,
+                **mixp, "take": g["files"][0]["path"], "vocal": a["vocal"], "music": a.get("music"), "bpm": bpm, "key": key,
                 "chops_seed": int(t.get("seed", 0)), "out_base": str(out_dir / name)})
             rel = lambda f: str(Path(f).relative_to(root)).replace("\\", "/")
-            results.append({"name": name, "mp3": rel(m["mp3"]), "beat_mp3": rel(m["beat_mp3"]),
+            results.append({"name": name, "mp3": rel(m["mp3"]), "beat_mp3": rel(m["beat_mp3"]), "chops": m.get("chops"),
                             "zip": rel(m["zip"]) if m.get("zip") else None,
                             "seed": g["files"][0].get("seed"), "caption": t.get("caption")})
         except RuntimeError as e:

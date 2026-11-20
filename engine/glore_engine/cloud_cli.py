@@ -158,7 +158,7 @@ def _start_or_reuse_inner(mgr: CloudManager, kind: str, hard_cap_s: float, idle_
             time.sleep(60)
 
 
-ENGINE_MODULES = ("__init__", "audio_io", "analysis", "separation", "cleanup", "vocal_lock", "chops", "fx", "mixing")
+ENGINE_MODULES = ("__init__", "audio_io", "analysis", "separation", "cleanup", "vocal_lock", "chops", "fx", "mixing")  # synced to the pod
 
 
 def sync_scripts(vol: cloud.Volume) -> None:

@@ -491,6 +491,8 @@ def run_generate_job(job: dict, root: Path, ace: Ace, log, status: Status) -> di
     variant = job.get("variant", "xl_sft")
     ace.ensure(variant, log, status)
     lm = job.get("lm", CLOUD_LM)
+    if not any(t.get("rewrite_caption", True) for t in job.get("takes") or []):
+        lm = None  # nobody asked for the planner: don't load 4B of it (it doesn't fit beside XL on a 20 GB card)
     if lm:
         ace.ensure_extra_model(lm, log, status)
     inference = VARIANT_INFERENCE[variant]

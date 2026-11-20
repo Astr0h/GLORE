@@ -128,3 +128,39 @@ def test_env_settings_need_the_secrets(monkeypatch):
         monkeypatch.setenv(k, v)
     s = cloud_cli.env_settings()
     assert s["datacenter"] == "EUR-IS-1" and "A100" in s["gpu"] and s["monthly_limit"] == 30
+
+
+def test_state_for_the_web_app_is_encrypted_and_has_play_links(cli, tmp_path, monkeypatch):
+    import base64
+    import hashlib
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    vol = cli["vol"]
+
+    class FakeS3:
+        def generate_presigned_url(self, op, Params, ExpiresIn):
+            return f"https://s3.example/{Params['Key']}?X-Expires={ExpiresIn}"
+    vol.s3, vol.bucket = FakeS3(), "vol123"
+    vol.put_bytes("loras/house/runX/final/adapter_model.safetensors", b"w")
+    vol.put_bytes("loras/house/runX/checkpoints/epoch_50_loss_0.9/adapter_model.safetensors", b"w")
+    takes = [{"name": "t1", "caption": "warm house", "lora": "runX@e50", "seed": 1, "duration": 30}]
+    tf = tmp_path / "takes.json"
+    tf.write_text(json.dumps(takes))
+    assert cloud_cli.main(["generate", "--takes", str(tf), "--wait", "--out", str(tmp_path / "o")]) == 0
+    monkeypatch.setenv("GLORE_WEB_KEY", "correct horse battery staple")
+    out = tmp_path / "state" / "state.json"
+    assert cloud_cli.main(["publish-state", "--out", str(out)]) == 0
+    enc = json.loads(out.read_text())
+    assert "warm house" not in out.read_text() and "t1" not in out.read_text()
+    d = lambda k: base64.b64decode(enc[k])
+    key = hashlib.pbkdf2_hmac("sha256", b"correct horse battery staple", d("salt"), enc["iter"], dklen=32)
+    state = json.loads(AESGCM(key).decrypt(d("iv"), d("ct"), None))
+    gen = next(j for j in state["jobs"] if j["mode"] == "generate")
+    assert gen["phase"] == "done" and gen["takes"][0]["url"].startswith("https://s3.example/outputs/")
+    assert gen["takes"][0]["url"].endswith(str(7 * 86400))
+    assert sorted(state["loras"]["runX"]["points"]) == ["e50", "final"]
+
+
+def test_publish_state_needs_the_web_key(cli, monkeypatch, capsys):
+    monkeypatch.delenv("GLORE_WEB_KEY", raising=False)
+    assert cloud_cli.main(["publish-state"]) == 1
+    assert "GLORE_WEB_KEY" in capsys.readouterr().err

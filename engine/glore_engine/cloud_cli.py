@@ -276,12 +276,11 @@ def cmd_check(a) -> dict:
         out["read_error"] = cloud._s3_msg(e)
     try:  # can the web app play takes straight from the volume through a time-limited link?
         import urllib.request
-        vol.put_bytes("glore/test/presign.txt", b"glore-ok")
-        url = vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": "glore/test/presign.txt"},
-                                            ExpiresIn=600)
+        key = "glore/glore_pod.py"  # read-only test on a file that's always there
+        url = vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": key}, ExpiresIn=600)
         with urllib.request.urlopen(url, timeout=20) as r:
             body = r.read()
-            out["presigned_links"] = "ok" if body == b"glore-ok" else f"unexpected body {body[:40]!r}"
+            out["presigned_links"] = "ok" if body.startswith(b'"""GLORE') else f"unexpected body {body[:40]!r}"
             out["presign_cors"] = r.headers.get("Access-Control-Allow-Origin")
     except Exception as e:
         out["presigned_links"] = f"failed: {e}"
@@ -309,6 +308,85 @@ def cmd_du(a) -> dict:
     out = {"total_gb": round(total / 2 ** 30, 2),
            "folders": [{"path": k, "gb": round(v / 2 ** 30, 2)} for k, v in rows if v > 2 ** 20][:60]}
     print(json.dumps(out, indent=2))
+    return out
+
+
+# ---------------------------------------------------------------- GLORE Web state
+
+def encrypt_state(data: dict, passphrase: str) -> dict:
+    """AES-256-GCM with a PBKDF2-SHA256 key: the web app decrypts it with Web Crypto.
+    The repo is public, so the state branch only ever holds this ciphertext."""
+    import base64
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt, iv = os.urandom(16), os.urandom(12)
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, 200_000, dklen=32)
+    ct = AESGCM(key).encrypt(iv, json.dumps(data).encode(), None)
+    b64 = lambda b: base64.b64encode(b).decode()
+    return {"v": 1, "kdf": "pbkdf2-sha256", "iter": 200_000, "salt": b64(salt), "iv": b64(iv), "ct": b64(ct)}
+
+
+def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> dict:
+    vol = mgr.volume()
+    try:
+        settle_ledger(mgr)
+    except CloudError:
+        pass  # a full volume can't take ledger writes; report what we can
+    jobs = []
+    for jid in sorted({k.split("/")[2] for k in vol.list_keys("glore/runs/") if k.endswith("status.json")}):
+        st = job_status(vol, jid)
+        row = {k: st.get(k) for k in ("job", "mode", "phase", "message", "progress", "epoch", "epochs", "loss",
+                                       "eta_s", "started", "heartbeat", "gpu", "error")}
+        res = st.get("result") or {}
+        if st.get("mode") == "generate":
+            takes = []
+            for t in res.get("takes", []):
+                t = dict(t)
+                if t.get("mp3"):
+                    t["url"] = vol.s3.generate_presigned_url(
+                        "get_object", Params={"Bucket": vol.bucket, "Key": t["mp3"]}, ExpiresIn=link_days * 86400)
+                takes.append(t)
+            row["takes"] = takes
+        elif st.get("mode") == "train":
+            row["run_id"] = res.get("lora_dir", "").split("/")[2] if res.get("lora_dir") else None
+        jobs.append(row)
+    jobs.sort(key=lambda r: r.get("started") or 0, reverse=True)
+    loras = {}
+    for k in vol.list_keys("loras/"):
+        parts = k.split("/")
+        if len(parts) < 5 or not k.endswith("adapter_model.safetensors"):
+            continue
+        name = "final" if parts[3] == "final" else (
+            f"e{glore_pod.checkpoint_epoch(parts[4])}" if parts[3] == "checkpoints" else None)
+        if name:
+            loras.setdefault(parts[2], {"pack": parts[1], "points": []})["points"].append(name)
+    s = mgr.settings()
+    return {"updated": time.time(), "jobs": jobs[:max_jobs], "loras": loras,
+            "active_pods": mgr.ledger.active(), "month_spend": mgr.month_spend(),
+            "monthly_limit": s.get("monthly_limit"), "gpu_pref": s.get("gpu"), "datacenter": s.get("datacenter")}
+
+
+def cmd_publish_state(a) -> dict:
+    key = os.environ.get("GLORE_WEB_KEY", "")
+    if not key:
+        raise CloudError("Add a GLORE_WEB_KEY repo secret (any long passphrase) to use GLORE Web")
+    state = build_state(manager())
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(a.out).write_text(json.dumps(encrypt_state(state, key)), encoding="utf-8")
+    print(json.dumps({"jobs": len(state["jobs"]), "loras": len(state["loras"]), "written": a.out}))
+    return state
+
+
+def cmd_grow(a) -> dict:
+    """Make the network volume bigger (RunPod can't shrink it again)."""
+    s = env_settings()
+    rp = cloud.RunPod(s["api_key"])
+    before = rp.get_volume(s["volume_id"])
+    if int(before.get("size") or 0) >= a.gb:
+        out = {"size_gb": before.get("size"), "changed": False}
+    else:
+        after = rp.resize_volume(s["volume_id"], a.gb)
+        out = {"was_gb": before.get("size"), "size_gb": after.get("size", a.gb), "changed": True}
+    print(json.dumps(out))
     return out
 
 
@@ -353,13 +431,17 @@ def main(argv: list[str] | None = None) -> int:
     lo.add_argument("--pack", default="house")
     sub.add_parser("stop")
     sub.add_parser("check")
+    gr = sub.add_parser("grow")
+    gr.add_argument("--gb", type=int, required=True)
+    ps = sub.add_parser("publish-state")
+    ps.add_argument("--out", default="state/state.json")
     du = sub.add_parser("du")
     du.add_argument("--prefix", default="")
     du.add_argument("--depth", default=3)
     a = ap.parse_args(argv)
     try:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
-         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du}[a.cmd](a)
+         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

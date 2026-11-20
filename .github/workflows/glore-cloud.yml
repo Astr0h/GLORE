@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "status | check | du | train | generate | fetch | loras | stop"
+        description: "status | check | du | grow | train | generate | fetch | loras | stop  (every run also refreshes GLORE Web)"
         required: true
         default: status
       args:
@@ -20,6 +20,10 @@ on:
         description: "generate: JSON list of takes [{name, caption, lora?, scale?, seed, duration, bpm, key}]"
         required: false
         default: ""
+
+permissions:
+  contents: write   # to publish the encrypted state file GLORE Web reads (branch glore-state)
+  actions: read
 
 concurrency:
   group: glore-cloud-${{ inputs.command }}
@@ -40,13 +44,14 @@ jobs:
       GLORE_DATACENTER: ${{ secrets.GLORE_DATACENTER }}
       GLORE_GPU: ${{ secrets.GLORE_GPU }}
       GLORE_MONTHLY_LIMIT: ${{ secrets.GLORE_MONTHLY_LIMIT }}
+      GLORE_WEB_KEY: ${{ secrets.GLORE_WEB_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install the few packages the cloud CLI needs
-        run: pip install --quiet "boto3>=1.35"
+        run: pip install --quiet "boto3>=1.35" "cryptography>=42"
       - name: Run
         env:
           CMD: ${{ inputs.command }}
@@ -63,6 +68,16 @@ jobs:
           if [ "$CMD" = "fetch" ]; then extra=(--out "$GITHUB_WORKSPACE/out"); fi
           # ARGS is split on spaces on purpose (flags only, no quoting needed)
           python -m glore_engine.cloud_cli "$CMD" "${extra[@]}" $ARGS | tee "$RUNNER_TEMP/output.txt"
+      - name: Refresh GLORE Web
+        if: always() && env.GLORE_WEB_KEY != ''
+        run: |
+          set -e
+          python -m glore_engine.cloud_cli publish-state --out "$RUNNER_TEMP/state/state.json"
+          cd "$RUNNER_TEMP/state"
+          git init -q -b glore-state
+          git add state.json
+          git -c user.name="glore-bot" -c user.email="glore-bot@users.noreply.github.com" commit -qm "GLORE state"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" glore-state
       - name: Keep the takes
         if: always() && (inputs.command == 'generate' || inputs.command == 'fetch')
         uses: actions/upload-artifact@v4

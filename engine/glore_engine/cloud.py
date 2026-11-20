@@ -187,6 +187,10 @@ class RunPod:
         return self._req("POST", "/network-volumes",
                          {"name": name, "size": int(size_gb), "dataCenter": dc, "type": "STANDARD"})
 
+    def resize_volume(self, vid: str, size_gb: int) -> dict:
+        """Network volumes can grow, never shrink."""
+        return self._req("PATCH", f"/network-volumes/{vid}", {"size": int(size_gb)})
+
     def get_volume(self, vid: str) -> dict:
         return self._req("GET", f"/network-volumes/{vid}")
 

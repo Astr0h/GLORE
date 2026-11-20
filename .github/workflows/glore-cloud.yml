@@ -80,7 +80,8 @@ jobs:
           git init -q -b glore-state
           git add state.json
           git -c user.name="glore-bot" -c user.email="glore-bot@users.noreply.github.com" commit -qm "GLORE state"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" glore-state
+          # several runs can finish at once: retry, last one wins (they all publish the same volume)
+          for i in 1 2 3; do git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" glore-state && break; sleep $((i * 3)); done
       - name: Keep the takes
         if: always() && (inputs.command == 'generate' || inputs.command == 'song' || inputs.command == 'fetch')
         uses: actions/upload-artifact@v4

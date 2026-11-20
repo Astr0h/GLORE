@@ -121,9 +121,17 @@ def _start_or_reuse(mgr: CloudManager, kind: str, hard_cap_s: float, idle_min: f
                     gpus: str | None = None) -> dict:
     try:
         return _start_or_reuse_inner(mgr, kind, hard_cap_s, idle_min, meta, gpus)
-    except Exception:
+    except Exception as e:
         if meta.get("job"):  # no GPU: don't leave the job queued for some later pod to run by surprise
-            mgr.volume().delete(f"glore/queue/{meta['job']}.json")
+            vol = mgr.volume()
+            raw = vol.get_bytes(f"glore/queue/{meta['job']}.json")
+            vol.delete(f"glore/queue/{meta['job']}.json")
+            job = json.loads(raw) if raw else {}
+            # ...and show the failure in GLORE Web instead of nothing at all
+            vol.put_bytes(f"glore/runs/{meta['job']}/status.json", json.dumps({
+                "job": meta["job"], "mode": job.get("mode"), "phase": "error", "started": time.time(),
+                "updated": time.time(), "message": str(e), "error": str(e),
+                "retry": {k: job.get(k) for k in ("op", "item") if job.get(k)}}).encode())
         raise
 
 
@@ -295,10 +303,18 @@ def safe_file(name: str) -> str:
     return "".join(c for c in Path(name or "audio").name if c.isalnum() or c in " ._-()&'").strip()[:80] or "audio"
 
 
+AUDIO_EXTS = (".wav", ".mp3", ".flac", ".m4a", ".aac", ".aif", ".aiff", ".ogg", ".opus", ".webm", ".bin")
+
+
+def strip_audio_ext(name: str) -> str:
+    """'Fred again.. - Winny.mp3' -> 'Fred again.. - Winny' (Path.stem would cut at the dots in the title)."""
+    return name[: -len(Path(name).suffix)] if Path(name).suffix.lower() in AUDIO_EXTS else name
+
+
 def library_add(vol: cloud.Volume, path: Path, name: str, kind: str, origin: str, **extra) -> dict:
     """Store a file (any format) in the library as FLAC, with a little item.json beside it."""
     item_id = uuid.uuid4().hex[:10]
-    stem = Path(safe_file(name)).stem or "audio"
+    stem = strip_audio_ext(safe_file(name)) or "audio"
     with tempfile.TemporaryDirectory() as tmp:
         flac = Path(tmp) / f"{stem}.flac"
         dur = to_flac(path, flac)
@@ -466,6 +482,20 @@ def _probe_key(vol, key, days0):
     return out
 
 
+def cmd_gpus(a) -> dict:
+    """What's in stock in the volume's datacenter right now, with prices."""
+    mgr = manager()
+    dc = mgr.settings()["datacenter"]
+    rows = []
+    for g in mgr.rp().gpus():
+        lvl = next((str(x.get("availability")) for x in g.get("dataCenters") or []
+                    if isinstance(x, dict) and x.get("id") == dc), "NONE")
+        rows.append((g.get("id"), cloud.gpu_price(g), lvl, g.get("memoryInGb") or g.get("memory")))
+    for gid, price, lvl, mem in sorted(rows, key=lambda r: (r[2] in ("NONE", "None"), r[1] or 99)):
+        print(f"{lvl:<7} ${price if price is not None else '?':<6} {mem or '?':>4} GB  {gid}")
+    return {"gpus": rows}
+
+
 def cmd_queue(a) -> dict:
     """Jobs waiting for a pod. --drop <id> (or 'all') removes them."""
     vol = manager().volume()
@@ -481,6 +511,12 @@ def cmd_queue(a) -> dict:
 
 def cmd_library(a) -> dict:
     vol = manager().volume()
+    if a.rename:
+        item = library_get(vol, a.rename)
+        item["name"] = safe_file(a.to.replace("_", " "))
+        vol.put_bytes(f"{LIB}/{item['id']}/item.json", json.dumps(item).encode())
+        print(f"Renamed to {item['name']}")
+        return {"renamed": item}
     if a.delete:  # one id or several, comma-separated
         gone = []
         for item_id in [i for i in a.delete.split(",") if i]:
@@ -974,10 +1010,13 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("probe")
     pr.add_argument("--key")
     pr.add_argument("--days", type=float, default=7)
+    sub.add_parser("gpus")
     qu = sub.add_parser("queue")
     qu.add_argument("--drop")
     lb = sub.add_parser("library")
     lb.add_argument("--delete")
+    lb.add_argument("--rename")
+    lb.add_argument("--to", default="")
     so = sub.add_parser("song")
     so.add_argument("--upload", help="path in the glore-uploads branch (from GLORE Web)")
     so.add_argument("--source", help="or: a file already on the volume")
@@ -1016,7 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
          "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
                 "import": cmd_import, "link": cmd_link, "library": cmd_library,
-                "tool": cmd_tool, "queue": cmd_queue, "probe": cmd_probe}[a.cmd](a)
+                "tool": cmd_tool, "queue": cmd_queue, "probe": cmd_probe, "gpus": cmd_gpus}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

@@ -1,0 +1,22 @@
+# Publishes GLORE Web (the web/ folder) to the gh-pages branch, which GitHub Pages serves.
+name: GLORE web
+on:
+  push:
+    paths: ["web/**"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push web/ to gh-pages
+        run: |
+          set -e
+          cd web
+          git init -q -b gh-pages
+          touch .nojekyll
+          git add -A
+          git -c user.name="glore-bot" -c user.email="glore-bot@users.noreply.github.com" commit -qm "GLORE Web from ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages

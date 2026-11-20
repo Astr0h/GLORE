@@ -248,3 +248,34 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .list-report { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--line); padding-top: 10px; }
 .list-report .label { cursor: help; color: var(--warn); }
 .list-report .fail { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Cloud GPU panel (LoRA Packs page) */
+.cloud { display: flex; flex-direction: column; gap: 12px; }
+.cloud-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cloud-head strong { font-size: 15px; font-weight: 600; }
+.cloud-head .status { margin-top: 0; }
+.badge.warn { color: var(--warn); border-color: rgba(255, 181, 71, .35); }
+.badge.live { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 10px var(--accent-soft); }
+.btn.ghost.on { border-color: var(--accent); color: var(--accent); }
+.pod-row { display: grid; grid-template-columns: 90px 1fr 80px 70px 110px; gap: 12px; padding: 6px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.cloud-form { display: flex; flex-direction: column; gap: 14px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 14px; }
+.fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 16px; }
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field .label { cursor: help; }
+.field-input { width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; font-size: 12.5px; min-width: 0; }
+.field-input:focus { outline: none; border-color: var(--accent); }
+.row.tight { gap: 6px; flex-wrap: nowrap; }
+.num.sm { width: 64px; padding: 4px 7px; font-size: 12px; }
+.train-row { border-top: 1px solid var(--line); padding-top: 12px; gap: 8px; }
+.train-row .label { cursor: help; }
+.lora-line { display: flex; align-items: center; gap: 6px; color: var(--text); flex-wrap: wrap; }
+.lora-line.bad { color: var(--danger); }
+.fit-line { display: block; line-height: 1.6; }
+.fit-line.bad { color: var(--danger); }
+.num::placeholder, .field-input::placeholder { color: var(--faint); }
+
+/* Generate */
+.gen { display: flex; flex-direction: column; gap: 14px; }
+.takes { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.take-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.take-name { flex: 1; font-size: 12.5px; }

@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0908">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>GLORE</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0908; --panel: #121110; --panel-2: #1a1816; --panel-3: #22201d;
+  --line: rgba(255,240,225,.07); --line-strong: rgba(255,240,225,.13);
+  --text: #f4efe9; --dim: #8c847b; --faint: #5a544e;
+  --accent: #ff8f3d; --accent-hi: #ffa45e; --accent-ink: #1a0b00;
+  --accent-soft: rgba(255,143,61,.13); --accent-glow: rgba(255,143,61,.35);
+  --second: #efe3d0; --danger: #ff5a4e; --ok: #7bd88f; --warn: #ffb547;
+  --r: 14px;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 Inter, system-ui, sans-serif; }
+body { min-height: 100vh; background: radial-gradient(1200px 500px at 50% -200px, rgba(255,143,61,.08), transparent 70%), var(--bg);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) calc(84px + env(safe-area-inset-bottom)) env(safe-area-inset-left); }
+.mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+.dim { color: var(--dim); } .faint { color: var(--faint); }
+header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+  background: rgba(10,9,8,.82); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid var(--line); }
+.logo { font-weight: 600; letter-spacing: .32em; font-size: 15px; }
+.logo i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 3px;
+  box-shadow: 0 0 10px var(--accent-glow); vertical-align: middle; font-style: normal; }
+.spacer { flex: 1; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: var(--panel-2);
+  border: 1px solid var(--line); font-size: 12px; color: var(--dim); white-space: nowrap; }
+.chip b { color: var(--text); font-weight: 600; }
+.chip.live { color: var(--accent); border-color: rgba(255,143,61,.3); background: var(--accent-soft); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.dot.on { background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); animation: pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+main { max-width: 760px; margin: 0 auto; padding: 18px; }
+h2 { font-size: 13px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin: 26px 2px 10px; }
+h2:first-child { margin-top: 4px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; margin-bottom: 12px; }
+.card.hl { border-color: rgba(255,143,61,.28); box-shadow: 0 0 0 1px rgba(255,143,61,.06), 0 10px 40px -20px var(--accent-glow); }
+label { display: block; font-size: 12px; color: var(--dim); margin: 12px 0 6px; font-weight: 500; }
+label:first-child { margin-top: 0; }
+input, select, textarea { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: 10px; padding: 11px 12px; font: inherit; outline: none; transition: border-color .15s, box-shadow .15s; }
+textarea { min-height: 92px; resize: vertical; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input[type=range] { padding: 0; height: 28px; background: none; border: 0; accent-color: var(--accent); }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+button { font: inherit; font-weight: 600; border: 0; border-radius: 11px; padding: 12px 16px; cursor: pointer; transition: transform .08s, background .15s, opacity .15s; }
+button:active { transform: scale(.98); }
+button:disabled { opacity: .45; cursor: default; }
+.btn { background: var(--accent); color: var(--accent-ink); box-shadow: 0 6px 22px -8px var(--accent-glow); }
+.btn:hover:not(:disabled) { background: var(--accent-hi); }
+.btn.wide { width: 100%; margin-top: 16px; padding: 14px; font-size: 16px; }
+.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-strong); }
+.ghost:hover:not(:disabled) { border-color: var(--accent); }
+.danger { background: rgba(255,90,78,.12); color: var(--danger); border: 1px solid rgba(255,90,78,.3); }
+.small { padding: 7px 11px; font-size: 13px; border-radius: 9px; }
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: 14px; }
+.toggle input { width: 44px; height: 26px; appearance: none; -webkit-appearance: none; border-radius: 99px; background: var(--panel-3);
+  border: 1px solid var(--line-strong); position: relative; padding: 0; cursor: pointer; flex: none; }
+.toggle input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: var(--dim); transition: .18s; }
+.toggle input:checked { background: var(--accent-soft); border-color: var(--accent); }
+.toggle input:checked::after { left: 20px; background: var(--accent); }
+.val { float: right; color: var(--text); font-family: "JetBrains Mono", monospace; font-size: 12px; }
+nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: flex; justify-content: center; gap: 4px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: rgba(14,13,12,.92); backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px); border-top: 1px solid var(--line); }
+nav button { flex: 1; max-width: 140px; background: none; color: var(--dim); padding: 8px 4px; display: flex; flex-direction: column;
+  align-items: center; gap: 3px; font-size: 11px; font-weight: 500; border-radius: 10px; }
+nav button svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+nav button.on { color: var(--accent); background: var(--accent-soft); }
+.view { display: none; } .view.on { display: block; animation: in .2s ease; }
+@keyframes in { from { opacity: 0; transform: translateY(4px); } }
+.take { display: grid; gap: 8px; }
+.take + .take { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.take-top { display: flex; align-items: baseline; gap: 10px; }
+.take-top b { font-weight: 600; } .take-top .spacer { flex: 1; }
+audio { width: 100%; height: 40px; border-radius: 10px; color-scheme: dark; }
+.cap { font-size: 13px; color: var(--dim); line-height: 1.5; }
+.bar { height: 6px; border-radius: 99px; background: var(--panel-3); overflow: hidden; margin: 10px 0 6px; }
+.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-hi)); border-radius: 99px; transition: width .5s; }
+.kv { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.kv:last-child { border-bottom: 0; } .kv span:first-child { color: var(--dim); }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.status.done { color: var(--ok); } .status.error, .status.failure { color: var(--danger); }
+.status.running, .status.training, .status.generating, .status.setup, .status.preprocessing, .status.labelling,
+.status.queued, .status.in_progress, .status.starting { color: var(--accent); }
+.empty { text-align: center; color: var(--dim); padding: 30px 10px; font-size: 14px; }
+.hint { font-size: 12px; color: var(--faint); margin-top: 8px; line-height: 1.5; }
+.toast { position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(20px);
+  background: var(--panel-3); border: 1px solid var(--line-strong); color: var(--text); padding: 11px 16px; border-radius: 12px;
+  font-size: 14px; opacity: 0; pointer-events: none; transition: .25s; max-width: calc(100% - 32px); z-index: 20; box-shadow: 0 14px 40px rgba(0,0,0,.5); }
+.toast.on { opacity: 1; transform: translateX(-50%); }
+.toast.err { border-color: rgba(255,90,78,.4); color: #ffd2cd; }
+.modal { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.6); backdrop-filter: blur(6px); display: none;
+  align-items: flex-end; justify-content: center; padding: 16px; }
+.modal.on { display: flex; }
+.modal .card { width: 100%; max-width: 480px; margin: 0 0 env(safe-area-inset-bottom); padding: 20px; }
+.modal h3 { margin: 0 0 8px; font-size: 18px; }
+.modal p { margin: 0 0 16px; color: var(--dim); font-size: 14px; }
+.modal .acts { display: flex; gap: 10px; } .modal .acts button { flex: 1; }
+a { color: var(--accent); }
+.setup { max-width: 460px; margin: 40px auto; }
+.setup h1 { font-size: 28px; letter-spacing: .3em; font-weight: 600; margin: 0 0 6px; }
+.setup ol { padding-left: 20px; color: var(--dim); font-size: 14px; } .setup ol li { margin: 6px 0; }
+.pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill { padding: 7px 12px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line-strong); font-size: 13px; color: var(--dim); cursor: pointer; }
+.pill.on { background: var(--accent-soft); color: var(--accent); border-color: rgba(255,143,61,.4); }
+.drop { display: flex; align-items: center; justify-content: center; min-height: 86px; border: 1.5px dashed var(--line-strong);
+  border-radius: 12px; background: var(--panel-2); color: var(--dim); font-size: 14px; cursor: pointer; text-align: center;
+  padding: 14px; margin: 0; transition: border-color .15s, color .15s; }
+.drop:hover, .drop.has { border-color: var(--accent); color: var(--text); }
+.beat-link { font-size: 12px; }
+.links { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; align-items: center; }
+.links button, .links a.btnlink { padding: 6px 10px; font-size: 12px; border-radius: 8px; font-weight: 500; }
+.playbtn { width: 100%; padding: 11px; border-radius: 10px; font-weight: 600; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 12px; margin-bottom: 4px; }
+.seg span { text-align: center; padding: 8px; border-radius: 9px; font-size: 13px; color: var(--dim); cursor: pointer; font-weight: 500; }
+.seg span.on { background: var(--panel-3); color: var(--text); box-shadow: 0 1px 0 var(--line-strong) inset; }
+.item { display: grid; gap: 8px; }
+.item + .item { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.item-top { display: flex; align-items: center; gap: 8px; }
+.item-top b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line-strong); color: var(--dim); white-space: nowrap; flex: none; }
+.tag.vocal { color: var(--accent); border-color: rgba(255,143,61,.35); }
+.tag.chops { color: var(--second); }
+.meta { font-size: 12px; color: var(--faint); font-family: "JetBrains Mono", monospace; }
+.acts-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.acts-row button { padding: 6px 10px; font-size: 12px; border-radius: 8px; font-weight: 500; }
+.acts-row .use { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(255,143,61,.35); }
+.working { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--accent); }
+.pending { font-size: 13px; }
+.pending .err { color: var(--danger); }
+.sheet .card { max-height: 86vh; overflow: auto; }
+nav button { max-width: 120px; padding: 8px 2px; }
+@media (min-width: 700px) { main { padding: 26px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">GLORE<i></i></div>
+  <div class="spacer"></div>
+  <span class="chip" id="spendChip" title="Cloud spend this month">$<b id="spend">–</b> / <span id="limit">–</span></span>
+  <button class="ghost small" id="refreshBtn" title="Ask the cloud for fresh status">↻</button>
+</header>
+
+<main>
+  <!-- setup -->
+  <section class="view" id="v-setup">
+    <div class="setup">
+      <h1>GLORE</h1>
+      <p class="dim">Connect this device once. Nothing is stored anywhere but this browser.</p>
+      <div class="card">
+        <label>GitHub token</label>
+        <input id="tok" type="password" autocomplete="off" placeholder="github_pat_…">
+        <label>GLORE Web key</label>
+        <input id="wkey" type="password" autocomplete="off" placeholder="the passphrase you saved as GLORE_WEB_KEY">
+        <label>Repository</label>
+        <input id="repo" value="Astr0h/GLORE">
+        <button class="btn wide" id="connectBtn">Connect</button>
+        <div class="hint">Token: GitHub → Settings → Developer settings → Fine-grained tokens → only the GLORE repo,
+          with <b>Actions: Read and write</b> and <b>Contents: Read and write</b> (uploads). The key unlocks your encrypted status file.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- song -->
+  <section class="view" id="v-song">
+    <h2>Your vocal → a song</h2>
+    <div class="card hl">
+      <div class="seg" id="srcSeg"><span class="on" data-s="upload">Upload</span><span data-s="library">From library</span></div>
+      <div id="srcUpload">
+      <label>Audio</label>
+      <label class="drop" id="drop"><input type="file" id="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.aiff,.ogg" hidden>
+        <span id="fileLabel">Tap to choose a vocal or a song</span></label>
+      </div>
+      <div id="srcLibrary" style="display:none">
+        <label>From your library</label>
+        <select id="songItem"></select>
+      </div>
+      <label>What is it?</label>
+      <div class="pill-row" id="kindPills">
+        <span class="pill on" data-k="vocal">Just the vocal</span>
+        <span class="pill" data-k="song">A full song (take the vocal out)</span>
+      </div>
+      <label>Sound of the beat</label>
+      <textarea id="songPrompt" placeholder="emotional UK house, warm piano chords, shuffled garage drums, deep sub bass, chopped vocal textures"></textarea>
+      <label>LoRA</label>
+      <select id="songLora"></select>
+      <label>LoRA strength <span class="val" id="songScaleVal">1.00</span></label>
+      <input type="range" id="songScale" min="0.2" max="1.4" step="0.05" value="1">
+      <label>Instruments to add</label>
+      <div class="pill-row" id="trackPills"></div>
+      <div class="row">
+        <div><label>BPM <span class="faint">(blank = detect)</span></label><input id="songBpm" type="number" inputmode="decimal" placeholder="auto"></div>
+        <div><label>Key</label><select id="songKey"></select></div>
+      </div>
+      <label>Takes</label>
+      <div class="pill-row" id="songCountPills"></div>
+    </div>
+    <h2>Mix</h2>
+    <div class="card">
+      <label>Vocal FX</label>
+      <div class="pill-row" id="fxPills">
+        <span class="pill on" data-v="clean">Clean</span><span class="pill" data-v="airy">Airy</span>
+        <span class="pill" data-v="club">Club</span><span class="pill" data-v="none">None</span>
+      </div>
+      <div class="row">
+        <div><label>Reverb <span class="val" id="reverbVal">50</span></label><input type="range" id="reverb" min="0" max="1" step="0.05" value="0.5"></div>
+        <div><label>Delay <span class="val" id="delayVal">50</span></label><input type="range" id="delay" min="0" max="1" step="0.05" value="0.5"></div>
+      </div>
+      <label>Vocal chops</label>
+      <div class="pill-row" id="chopPills">
+        <span class="pill on" data-v="">None</span><span class="pill" data-v="house">House</span>
+        <span class="pill" data-v="rnb">R&amp;B / Rap</span><span class="pill" data-v="gospel">Gospel / Soul</span>
+      </div>
+      <div class="row">
+        <div><label>Chop amount <span class="val" id="chopDenVal">1.0×</span></label><input type="range" id="chopDen" min="0.4" max="2" step="0.1" value="1"></div>
+        <div><label>Vocal level <span class="val" id="vocDbVal">0 dB</span></label><input type="range" id="vocDb" min="-6" max="6" step="0.5" value="0"></div>
+      </div>
+      <div class="hint">Every take comes with the full song, the beat on its own, and a stems ZIP (vocal, drums, bass, music, chops) for Ableton.</div>
+      <button class="btn wide" id="songBtn">Build the song</button>
+      <div class="hint" id="songHint">Your file is encrypted on this device before upload. The beat is written while the model hears your vocal; then your real vocal goes on top. About 10–20 minutes.</div>
+      <div class="bar" id="upBar" style="display:none"><i style="width:0%"></i></div>
+    </div>
+  </section>
+
+  <!-- library -->
+  <section class="view" id="v-library">
+    <h2>Add to your library</h2>
+    <div class="card hl">
+      <div class="seg" id="addSeg"><span class="on" data-s="file">File</span><span data-s="link">Link</span></div>
+      <div id="addFile">
+        <label class="drop" id="libDrop" style="margin-top:12px"><input type="file" id="libFile" accept="audio/*,.wav,.mp3,.m4a,.flac,.aiff,.ogg" hidden>
+          <span id="libFileLabel">Tap to choose audio</span></label>
+      </div>
+      <div id="addLink" style="display:none">
+        <label>Link</label>
+        <input id="linkUrl" type="url" inputmode="url" placeholder="SoundCloud, YouTube, Spotify or Apple Music link">
+        <div class="hint">SoundCloud downloads straight away. YouTube blocks cloud servers, so YouTube, Spotify and Apple links wait for GLORE on your PC, which downloads them at home.</div>
+      </div>
+      <label>What is it?</label>
+      <div class="pill-row" id="libKind">
+        <span class="pill on" data-k="song">Full song</span><span class="pill" data-k="vocal">Vocal</span>
+        <span class="pill" data-k="beat">Beat</span><span class="pill" data-k="other">Other</span>
+      </div>
+      <button class="btn wide" id="addBtn">Add</button>
+      <div class="bar" id="libBar" style="display:none"><i style="width:0%"></i></div>
+    </div>
+    <div id="libWorking"></div>
+    <h2>Library</h2>
+    <div class="pill-row" id="libFilter" style="margin-bottom:10px">
+      <span class="pill on" data-f="">All</span><span class="pill" data-f="vocal">Vocals</span><span class="pill" data-f="song">Songs</span>
+      <span class="pill" data-f="beat">Beats</span><span class="pill" data-f="stem">Stems</span><span class="pill" data-f="chops">Chops</span>
+    </div>
+    <div class="card" id="libList"></div>
+  </section>
+
+  <!-- create -->
+  <section class="view" id="v-create">
+    <h2>New takes</h2>
+    <div class="card hl">
+      <label>Prompt</label>
+      <textarea id="prompt" placeholder="emotional UK house, chopped vocal samples, warm piano chords, shuffled drums, deep sub bass"></textarea>
+      <label>LoRA</label>
+      <select id="lora"></select>
+      <label>LoRA strength <span class="val" id="scaleVal">1.00</span></label>
+      <input type="range" id="scale" min="0.2" max="1.4" step="0.05" value="1">
+      <div class="row3">
+        <div><label>BPM</label><input id="bpm" type="number" inputmode="numeric" value="126" min="60" max="200"></div>
+        <div><label>Key</label><select id="key"></select></div>
+        <div><label>Length</label><select id="len"><option value="30">30 s</option><option value="60" selected>1 min</option><option value="120">2 min</option><option value="180">3 min</option></select></div>
+      </div>
+      <label>Takes</label>
+      <div class="pill-row" id="countPills"></div>
+      <div class="toggle"><span>Song planner writes the full description</span><input type="checkbox" id="rewrite" checked></div>
+      <button class="btn wide" id="genBtn">Generate</button>
+      <div class="hint" id="genHint">Runs on the cloud GPU. A batch takes about 10–15 minutes including start-up.</div>
+    </div>
+    <div id="pendingGen"></div>
+  </section>
+
+  <!-- takes -->
+  <section class="view" id="v-takes">
+    <h2>Takes</h2>
+    <div id="takesList"></div>
+  </section>
+
+  <!-- train -->
+  <section class="view" id="v-train">
+    <h2>Training</h2>
+    <div id="trainList"></div>
+    <h2>Start a run</h2>
+    <div class="card">
+      <div class="row">
+        <div><label>Model</label><select id="variant">
+          <option value="xl_sft">XL-SFT (best)</option><option value="sft">SFT</option><option value="turbo">Turbo (fast)</option></select></div>
+        <div><label>Pack</label><select id="pack"><option value="house">House</option></select></div>
+      </div>
+      <div class="row">
+        <div><label>Epochs</label><input id="epochs" type="number" inputmode="numeric" value="200" min="10" max="2000"></div>
+        <div><label>Checkpoint every</label><input id="saveEvery" type="number" inputmode="numeric" value="50" min="10"></div>
+      </div>
+      <button class="btn wide" id="trainBtn">Train</button>
+      <div class="hint">Uses the tracks and captions already on your cloud volume. The GPU shuts itself off when done.</div>
+    </div>
+  </section>
+
+  <!-- cloud -->
+  <section class="view" id="v-cloud">
+    <h2>Cloud</h2>
+    <div class="card" id="cloudCard"></div>
+    <div class="card">
+      <div class="kv"><span>Status file updated</span><span id="updated">–</span></div>
+      <div class="kv"><span>Recent cloud actions</span><span></span></div>
+      <div id="runsList" class="mono dim" style="margin-top:6px"></div>
+      <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap">
+        <button class="ghost small" id="checkBtn">Connection check</button>
+        <button class="danger small" id="stopBtn">Stop all GPUs</button>
+        <button class="ghost small" id="logoutBtn">Disconnect this device</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<nav id="nav">
+  <button data-v="song" class="on"><svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>Song</button>
+  <button data-v="library"><svg viewBox="0 0 24 24"><path d="M4 4v16M9 4v16"/><path d="M14 4.5l5.5 15"/></svg>Library</button>
+  <button data-v="create"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>Create</button>
+  <button data-v="takes"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Takes</button>
+  <button data-v="train"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Train</button>
+  <button data-v="cloud"><svg viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 1 0-1.4-8.8A6 6 0 0 0 4.5 13 3 3 0 0 0 6 19z"/></svg>Cloud</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+<div class="modal sheet" id="sheet"><div class="card"><h3 id="sTitle"></h3><div id="sBody"></div>
+  <div class="acts" style="margin-top:18px"><button class="ghost" id="sNo">Cancel</button><button class="btn" id="sYes">Run</button></div></div></div>
+<div class="modal" id="modal"><div class="card"><h3 id="mTitle"></h3><p id="mText"></p>
+  <div class="acts"><button class="ghost" id="mNo">Cancel</button><button class="btn" id="mYes">OK</button></div></div></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const WF = "glore-cloud.yml";
+const store = { get(k, d) { try { const v = localStorage.getItem("glore." + k); return v === null ? d : v; } catch { return d; } },
+                set(k, v) { try { localStorage.setItem("glore." + k, v); } catch {} },
+                del(k) { try { localStorage.removeItem("glore." + k); } catch {} } };
+let cfg = { token: store.get("token", ""), key: store.get("key", ""), repo: store.get("repo", "Astr0h/GLORE"),
+            ref: store.get("ref", "") };
+let state = null, runs = [], lastDispatch = 0, takesCount = 2;
+
+// ------------------------------------------------------------- helpers
+function toast(msg, err) { const t = $("#toast"); t.textContent = msg; t.className = "toast on" + (err ? " err" : "");
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.className = "toast", 3600); }
+function ask(title, text, yes = "OK") { return new Promise((res) => {
+  $("#mTitle").textContent = title; $("#mText").textContent = text; $("#mYes").textContent = yes; $("#modal").classList.add("on");
+  const done = (v) => { $("#modal").classList.remove("on"); $("#mYes").onclick = $("#mNo").onclick = null; res(v); };
+  $("#mYes").onclick = () => done(true); $("#mNo").onclick = () => done(false); }); }
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function ago(t) { if (!t) return "–"; const s = Math.max(0, Date.now() / 1000 - t);
+  return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : s < 86400 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; }
+function dur(s) { if (!s) return ""; s = Math.round(s); return s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}m` : `${Math.max(1, Math.round(s / 60))} min`; }
+
+async function gh(path, opts = {}) {
+  const r = await fetch(`https://api.github.com/repos/${cfg.repo}${path}`, { ...opts,
+    headers: { Authorization: `Bearer ${cfg.token}`, Accept: opts.accept || "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28", ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
+  if (r.status === 401) throw new Error("GitHub refused the token");
+  if (r.status === 404 && path.includes("glore-state")) return null;
+  if (!r.ok) { let m = ""; try { m = (await r.json()).message; } catch {} throw new Error(m || `GitHub error ${r.status}`); }
+  if (opts.binary) return r.arrayBuffer();
+  return opts.accept && opts.accept.includes("raw") ? r.text() : (r.status === 204 ? null : r.json());
+}
+async function defaultRef() {
+  if (cfg.ref) return cfg.ref;
+  try { const wf = await gh(`/actions/workflows/${WF}/runs?per_page=1`); cfg.ref = wf.workflow_runs[0]?.head_branch || "main"; }
+  catch { cfg.ref = "main"; }
+  return cfg.ref;
+}
+async function dispatch(command, args = "", takes = "") {
+  const ref = await defaultRef();
+  await gh(`/actions/workflows/${WF}/dispatches`, { method: "POST",
+    body: JSON.stringify({ ref, inputs: { command, args, takes } }) });
+  lastDispatch = Date.now(); setTimeout(pollRuns, 4000);
+}
+
+// ------------------------------------------------------------- crypto (matches cloud_cli.encrypt_state)
+const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+async function decrypt(env) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(cfg.key), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt: b64(env.salt), iterations: env.iter },
+    base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64(env.iv) }, key, b64(env.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+// ------------------------------------------------------------- audio: encrypted files on the glore-media branch
+const mediaCache = new Map();
+async function decryptBlob(buf) {
+  const b = new Uint8Array(buf), salt = b.subarray(0, 16), iv = b.subarray(16, 28);
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(cfg.key), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 200000 }, base,
+    { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, b.subarray(28));
+}
+async function mediaUrl(name, type = "audio/mpeg") {
+  if (mediaCache.has(name)) return mediaCache.get(name);
+  const p = (async () => {
+    const buf = await gh(`/contents/${name}?ref=${(state && state.media_branch) || "glore-media"}`,
+                         { accept: "application/vnd.github.raw+json", binary: true });
+    return URL.createObjectURL(new Blob([await decryptBlob(buf)], { type }));
+  })();
+  mediaCache.set(name, p);
+  p.catch(() => mediaCache.delete(name));
+  return p;
+}
+const player = (name, label = "Play") => name
+  ? `<div class="player" data-media="${esc(name)}"><button class="ghost playbtn">▶ ${label}</button></div>`
+  : `<div class="hint">Audio appears here after the next cloud refresh (tap ↻).</div>`;
+const dl = (name, fn, label) => name ? `<button class="ghost dlbtn" data-media="${esc(name)}" data-fn="${esc(fn)}">${label}</button>` : "";
+document.addEventListener("click", async (e) => {
+  const pb = e.target.closest(".playbtn"), db = e.target.closest(".dlbtn");
+  if (!pb && !db) return;
+  const box = (pb || db), name = box.closest("[data-media]").dataset.media, old = box.textContent;
+  box.disabled = true; box.textContent = "Loading…";
+  try {
+    const url = await mediaUrl(name, db && /\.zip$/i.test(db.dataset.fn) ? "application/zip" : "audio/mpeg");
+    if (pb) {
+      const a = document.createElement("audio"); a.controls = true; a.src = url;
+      pb.parentElement.replaceChildren(a); a.play().catch(() => {});
+    } else {
+      const a = document.createElement("a"); a.href = url; a.download = db.dataset.fn; document.body.appendChild(a); a.click(); a.remove();
+      box.textContent = old; box.disabled = false;
+    }
+  } catch (err) {
+    toast(/404|Not Found/i.test(err.message) ? "That audio isn't uploaded yet: tap ↻ and try again in a minute" : err.message, true);
+    box.textContent = old; box.disabled = false;
+  }
+});
+
+// ------------------------------------------------------------- data
+async function loadState() {
+  const raw = await gh(`/contents/state.json?ref=glore-state&t=${Date.now()}`, { accept: "application/vnd.github.raw+json" });
+  if (!raw) { state = null; render(); return; }
+  try { state = await decrypt(JSON.parse(raw)); }
+  catch { toast("Couldn't unlock the status file: check the GLORE Web key", true); return; }
+  render();
+}
+async function pollRuns() {
+  try { const r = await gh(`/actions/workflows/${WF}/runs?per_page=10`); runs = r.workflow_runs || []; } catch { return; }
+  const busy = runs.some((x) => x.status !== "completed");
+  if (!busy && Date.now() - lastDispatch < 30 * 60e3) await loadState();
+  renderRuns();
+}
+
+// ------------------------------------------------------------- render
+function render() {
+  $("#spend").textContent = state ? Number(state.month_spend || 0).toFixed(2) : "–";
+  $("#limit").textContent = state && state.monthly_limit ? "$" + state.monthly_limit : "–";
+  const live = state && (state.active_pods || []).length;
+  $("#spendChip").className = "chip" + (live ? " live" : "");
+  $("#updated").textContent = state ? ago(state.updated) : "never";
+  renderLoras(); renderTakes(); renderTrain(); renderCloud(); renderRuns(); renderLibrary();
+}
+function loraVariant(v) { return !v ? "xl_sft" : v.includes("xl_sft") ? "xl_sft" : v.includes("-sft-") ? "sft" : v.includes("-base-") ? "base" : "turbo"; }
+function renderLoras() {
+  fillLoras($("#lora"), "lora", () => true, "No LoRA (plain XL-SFT)");
+  fillLoras($("#songLora"), "songLora", (run) => loraVariant(run) !== "turbo", "No LoRA (plain XL-SFT)");
+}
+function fillLoras(sel, storeKey, ok, none) {
+  const keep = sel.value || store.get(storeKey, null);
+  const opts = [`<option value="">${none}</option>`];
+  const L = (state && state.loras) || {};
+  Object.keys(L).filter(ok).sort().reverse().forEach((run) => {
+    const pts = L[run].points.slice().sort((a, b) => (a === "final") - (b === "final") || parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    const label = run.includes("xl_sft") ? "XL-SFT" : run.includes("-sft-") ? "SFT" : run.includes("turbo") ? "Turbo" : run;
+    pts.forEach((p) => { const v = p === "final" ? run : `${run}@${p}`;
+      opts.push(`<option value="${esc(v)}">${esc(label)} · ${p === "final" ? "final" : "epoch " + p.slice(1)} · ${esc(run.slice(0, 6))}</option>`); });
+  });
+  sel.innerHTML = opts.join("");
+  if (keep !== null && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  else { const xl = [...sel.options].find((o) => o.value.includes("xl_sft") && !o.value.includes("@")); if (xl) sel.value = xl.value; }
+}
+function statusBadge(phase) { const p = phase || "unknown"; return `<span class="status ${esc(p)}">${["done", "error", "stopped"].includes(p) ? "" : '<span class="dot on"></span>'}${esc(p)}</span>`; }
+function renderTakes() {
+  const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "generate" || j.mode === "song");
+  if (!jobs.length) { $("#takesList").innerHTML = `<div class="card empty">No takes yet. Make some on the Song or Create tab.</div>`; return; }
+  $("#takesList").innerHTML = jobs.map((j) => {
+    const when = new Date((j.started || 0) * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    const tag = j.mode === "song" ? `Song${j.bpm ? ` · ${Math.round(j.bpm)} BPM` : ""}${j.key ? ` · ${esc(j.key)}` : ""} · ` : "";
+    const head = `<div class="take-top"><span class="dim mono">${tag}${when}</span><span class="spacer"></span>${statusBadge(j.phase)}</div>`;
+    if (j.phase !== "done") return `<div class="card">${head}<div class="cap" style="margin-top:8px">${esc(j.message || "")}</div></div>`;
+    const takes = (j.takes || []).map((t) => t.mp3 ? `<div class="take">
+        <div class="take-top"><b>${esc(t.name)}</b><span class="spacer"></span><span class="faint mono">seed ${esc(t.seed ?? "")}</span></div>
+        ${player(t.media)}
+        <div class="links">${dl(t.media, t.name + ".mp3", "Save MP3")}
+          ${t.beat_media ? `<span data-media="${esc(t.beat_media)}" style="display:contents">${dl(t.beat_media, t.name + " (beat).mp3", "Beat only")}</span>` : ""}
+          ${t.zip_media ? dl(t.zip_media, t.name + " (stems).zip", "Stems ZIP (WAV)")
+            : t.zip && j.gh_run ? `<a class="ghost btnlink" style="text-decoration:none;color:var(--text)" href="https://github.com/${esc(cfg.repo)}/actions/runs/${esc(j.gh_run)}" target="_blank" rel="noopener">Stems ZIP on GitHub ↗</a>` : ""}</div>
+        ${t.planned_caption ? `<div class="cap">${esc(t.planned_caption)}</div>` : ""}</div>`
+      : `<div class="take"><b>${esc(t.name)}</b><div class="cap" style="color:var(--danger)">${esc(t.error || "failed")}</div></div>`).join("");
+    return `<div class="card">${head}<div style="margin-top:12px">${takes}</div></div>`;
+  }).join("") + `<div class="hint" style="text-align:center">Play links last 7 days. Download anything you want to keep.</div>`;
+}
+function renderTrain() {
+  const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "train");
+  if (!jobs.length) { $("#trainList").innerHTML = `<div class="card empty">No cloud training runs yet.</div>`; return; }
+  $("#trainList").innerHTML = jobs.slice(0, 6).map((j) => {
+    const pct = Math.round(100 * (j.phase === "done" ? 1 : (j.progress || 0)));
+    return `<div class="card ${j.phase === "training" ? "hl" : ""}">
+      <div class="take-top"><b>${j.epoch != null ? `Epoch ${j.epoch}/${j.epochs}` : "Training"}</b><span class="spacer"></span>${statusBadge(j.phase)}</div>
+      ${j.phase === "training" || j.phase === "done" ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ""}
+      <div class="cap">${esc(j.message || "")}${j.eta_s && j.phase === "training" ? ` · about ${dur(j.eta_s)} left` : ""}</div>
+      <div class="faint mono" style="margin-top:6px">${esc(j.gpu || "")}${j.loss ? ` · loss ${Number(j.loss).toFixed(4)}` : ""} · updated ${ago(j.heartbeat)}</div>
+    </div>`;
+  }).join("");
+}
+function renderCloud() {
+  const pods = (state && state.active_pods) || [];
+  const now = Date.now() / 1000;
+  $("#cloudCard").innerHTML = (pods.length ? pods.map((p) => {
+    const hrs = (now - p.started) / 3600, cost = hrs * (p.cost_per_hr || 0);
+    return `<div class="kv"><span><span class="dot on" style="display:inline-block;margin-right:6px"></span>${esc((p.gpu || "").replace("NVIDIA ", ""))}</span>
+      <span>${dur(now - p.started)} · $${cost.toFixed(2)}</span></div>`; }).join("") : `<div class="kv"><span>GPUs running</span><span>none</span></div>`)
+    + `<div class="kv"><span>This month</span><span>$${state ? Number(state.month_spend || 0).toFixed(2) : "–"}${state && state.monthly_limit ? " of $" + state.monthly_limit : ""}</span></div>`
+    + `<div class="kv"><span>Datacenter</span><span>${esc((state && state.datacenter) || "–")}</span></div>`;
+}
+function renderRuns() {
+  const busy = runs.filter((r) => r.status !== "completed");
+  $("#refreshBtn").innerHTML = busy.length ? '<span class="dot on" style="display:inline-block"></span>' : "↻";
+  $("#runsList").innerHTML = runs.slice(0, 6).map((r) =>
+    `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0"><a href="${esc(r.html_url)}" target="_blank" rel="noopener">${esc(r.display_title || r.name)}</a>
+     <span class="status ${esc(r.conclusion || r.status)}">${esc(r.conclusion || r.status.replace("_", " "))}</span></div>`).join("") || "none yet";
+  const gen = busy.length && Date.now() - lastDispatch < 90 * 60e3;
+  $("#pendingGen").innerHTML = gen ? `<div class="card"><div class="take-top"><b>Working in the cloud</b><span class="spacer"></span>${statusBadge("running")}</div>
+    <div class="cap" style="margin-top:6px">The status refreshes on its own. New takes land on the Takes tab.</div></div>` : "";
+}
+
+// ------------------------------------------------------------- actions
+async function generate() {
+  const prompt = $("#prompt").value.trim();
+  if (!prompt) return toast("Write a prompt first", true);
+  const lora = $("#lora").value, n = takesCount, seed0 = Math.floor(Math.random() * 1e9);
+  const name = prompt.split(/[,.]/)[0].trim().slice(0, 32) || "take";
+  const takes = Array.from({ length: n }, (_, i) => ({ name: `${name} ${i + 1}`, caption: prompt, lora: lora || undefined,
+    scale: Number($("#scale").value), seed: seed0 + i, duration: Number($("#len").value), bpm: Number($("#bpm").value) || null,
+    key: $("#key").value || null, rewrite_caption: $("#rewrite").checked }));
+  store.set("lora", lora); store.set("prompt", prompt);
+  $("#genBtn").disabled = true;
+  try { await dispatch("generate", `--wait --variant ${loraVariant(lora)}`, JSON.stringify(takes)); toast(`${n} take${n > 1 ? "s" : ""} queued in the cloud`); }
+  catch (e) { toast(e.message, true); } finally { setTimeout(() => $("#genBtn").disabled = false, 3000); }
+}
+async function train() {
+  const v = $("#variant").value, ep = Number($("#epochs").value), se = Number($("#saveEvery").value);
+  const est = v.startsWith("xl") ? ep * 0.045 : ep * 0.02;
+  if (!await ask("Start training?", `${$("#variant").selectedOptions[0].text}, ${ep} epochs. Roughly $${(est * 0.6).toFixed(0)}–${est.toFixed(0)} depending on the GPU. It shuts itself off when done.`, "Train")) return;
+  try { await dispatch("train", `--variant ${v} --epochs ${ep} --save-every ${se} --pack ${$("#pack").value}`); toast("Training run requested"); }
+  catch (e) { toast(e.message, true); }
+}
+
+// ------------------------------------------------------------- song: encrypted upload -> cloud
+let songKind = "vocal", songCount = 2, songTracks = new Set(["drums", "bass", "keyboard", "synth"]);
+const TRACKS = ["drums", "bass", "keyboard", "synth", "strings", "percussion", "guitar", "fx", "backing_vocals"];
+function b64enc(bytes) { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+async function encryptFile(buf) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(cfg.key), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 200000 }, base,
+    { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, buf));
+  const out = new Uint8Array(28 + ct.length); out.set(salt, 0); out.set(iv, 16); out.set(ct, 28); return out;
+}
+async function uploadEncrypted(bytes, path, progress) {
+  progress(0.35, "Uploading…");
+  const blob = await gh("/git/blobs", { method: "POST", body: JSON.stringify({ content: b64enc(bytes), encoding: "base64" }) });
+  progress(0.8, "Saving…");
+  let parent = null, baseTree = null;
+  try { const ref = await gh("/git/ref/heads/glore-uploads"); parent = ref.object.sha;
+        baseTree = (await gh(`/git/commits/${parent}`)).tree.sha; } catch {}
+  const tree = await gh("/git/trees", { method: "POST", body: JSON.stringify({ ...(baseTree ? { base_tree: baseTree } : {}),
+    tree: [{ path, mode: "100644", type: "blob", sha: blob.sha }] }) });
+  const commit = await gh("/git/commits", { method: "POST", body: JSON.stringify({ message: "GLORE upload (encrypted)", tree: tree.sha,
+    parents: parent ? [parent] : [] }) });
+  if (parent) await gh("/git/refs/heads/glore-uploads", { method: "PATCH", body: JSON.stringify({ sha: commit.sha, force: true }) });
+  else await gh("/git/refs", { method: "POST", body: JSON.stringify({ ref: "refs/heads/glore-uploads", sha: commit.sha }) });
+}
+async function buildSong() {
+  const f = songSrc === "upload" ? $("#file").files[0] : null;
+  const item = songSrc === "library" ? lib().find((i) => i.id === $("#songItem").value) : null;
+  if (songSrc === "upload" && !f) return toast("Choose a vocal or a song first", true);
+  if (songSrc === "library" && !item) return toast("Pick something from your library", true);
+  if (f && f.size > 70 * 2 ** 20) return toast("That file is over 70 MB: export an MP3 or a shorter WAV", true);
+  const prompt = $("#songPrompt").value.trim() || $("#songPrompt").placeholder;
+  const lora = $("#songLora").value, seed0 = Math.floor(Math.random() * 1e9);
+  const base = (f ? f.name.replace(/\.[^.]+$/, "") : item.name).replace(/[^A-Za-z0-9 ._()+-]/g, "").slice(0, 28).trim() || "song";
+  const takes = Array.from({ length: songCount }, (_, i) => ({ name: `${base} ${i + 1}`, caption: prompt, lora: lora || undefined,
+    scale: Number($("#songScale").value), seed: seed0 + i, tracks: [...songTracks] }));
+  const bar = $("#upBar"), fill = bar.querySelector("i"), btn = $("#songBtn");
+  const progress = (p, m) => { bar.style.display = "block"; fill.style.width = Math.round(p * 100) + "%"; btn.textContent = m; };
+  btn.disabled = true;
+  try {
+    let args = `--wait --kind ${songKind} --variant ${loraVariant(lora)}`;
+    if (f) {
+      progress(0.1, "Encrypting…");
+      const enc = await encryptFile(await f.arrayBuffer());
+      const path = `uploads/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;
+      await uploadEncrypted(enc, path, progress);
+      args += ` --upload ${path} --name ${argName(f.name)}`;
+    } else args += ` --item ${item.id}`;
+    args += ` --fx ${songFx} --reverb ${$("#reverb").value} --delay ${$("#delay").value} --vocal-db ${$("#vocDb").value}`;
+    if (songChops) args += ` --chops ${songChops} --chops-density ${$("#chopDen").value}`;
+    if ($("#songBpm").value) args += ` --bpm ${Number($("#songBpm").value)}`;
+    if ($("#songKey").value) args += ` --key ${$("#songKey").value.replace(" ", "_")}`;
+    progress(0.95, "Starting the cloud job…");
+    await dispatch("song", args, JSON.stringify(takes));
+    progress(1, "Build the song");
+    store.set("songLora", lora); store.set("songPrompt", $("#songPrompt").value);
+    toast("Uploaded. Your song is being built in the cloud");
+  } catch (e) { toast(e.message, true); btn.textContent = "Build the song"; }
+  finally { btn.disabled = false; setTimeout(() => bar.style.display = "none", 1500); }
+}
+function initSong() {
+  $("#file").onchange = () => { const f = $("#file").files[0];
+    $("#fileLabel").textContent = f ? `${f.name} · ${(f.size / 2 ** 20).toFixed(1)} MB` : "Tap to choose a vocal or a song";
+    $("#drop").classList.toggle("has", !!f); };
+  $("#kindPills").onclick = (e) => { const k = e.target.dataset.k; if (!k) return; songKind = k; setKind(); };
+  $("#songCountPills").innerHTML = [1, 2, 3, 4].map((n) => `<span class="pill ${n === songCount ? "on" : ""}" data-n="${n}">${n}</span>`).join("");
+  $("#songCountPills").onclick = (e) => { const n = e.target.dataset.n; if (!n) return; songCount = Number(n);
+    document.querySelectorAll("#songCountPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.n === n)); };
+  $("#trackPills").innerHTML = TRACKS.map((t) => `<span class="pill ${songTracks.has(t) ? "on" : ""}" data-t="${t}">${t.replace("_", " ")}</span>`).join("");
+  $("#trackPills").onclick = (e) => { const t = e.target.dataset.t; if (!t) return;
+    if (songTracks.has(t) && songTracks.size > 1) songTracks.delete(t); else songTracks.add(t);
+    e.target.classList.toggle("on", songTracks.has(t)); };
+  $("#songScale").oninput = () => $("#songScaleVal").textContent = Number($("#songScale").value).toFixed(2);
+  $("#songKey").innerHTML = `<option value="">Detect</option>` + $("#key").innerHTML.replace('<option value="">Any</option>', "");
+  $("#songKey").value = "";
+  $("#songPrompt").value = store.get("songPrompt", "");
+  $("#songBtn").onclick = buildSong;
+}
+
+// ------------------------------------------------------------- library
+let libKind = "song", libFilter = "", addMode = "file", songSrc = "upload", recentTools = {};
+const KIND_LABEL = { vocal: "vocal", song: "song", beat: "beat", stem: "stem", chops: "chops", other: "other" };
+const TOOL_WORD = { stems: "Splitting into stems", clean: "Cleaning", analyse: "Finding BPM and key", lock: "Stretching", chops: "Chopping" };
+let deleting = JSON.parse(store.get("deleting", "{}"));  // id -> time tapped; hidden until the cloud confirms
+const lib = () => {
+  const all = (state && state.library) || [], ids = new Set(all.map((i) => i.id));
+  let changed = false;
+  for (const [id, t] of Object.entries(deleting))  // confirmed gone, or the request is long stale
+    if ((!id.startsWith("link:") && !ids.has(id)) || Date.now() - t > 20 * 60e3) { delete deleting[id]; changed = true; }
+  if (changed) store.set("deleting", JSON.stringify(deleting));
+  return all.filter((i) => !deleting[i.id]);
+};
+let deleteBatch = [], deleteTimer = null;
+function queueDelete(item) {
+  deleting[item.id] = Date.now(); store.set("deleting", JSON.stringify(deleting));
+  deleteBatch.push(item.id); renderLibrary();
+  clearTimeout(deleteTimer);  // taps within a few seconds go to the cloud as one request
+  deleteTimer = setTimeout(async () => {
+    const ids = deleteBatch.splice(0);
+    try { await dispatch("library", `--delete ${ids.join(",")}`); }
+    catch (e) { ids.forEach((id) => delete deleting[id]); store.set("deleting", JSON.stringify(deleting)); renderLibrary(); toast(e.message, true); }
+  }, 2500);
+}
+const fmtLen = (s) => !s ? "" : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+const argName = (n) => n.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._()-]+/g, "_").slice(0, 70) || "audio";
+
+function itemMeta(i) {
+  return [fmtLen(i.duration), i.bpm ? `${Math.round(i.bpm * 10) / 10} BPM` : "", i.key || "", i.camelot || "",
+          i.origin === "link" && i.service ? i.service : ""].filter(Boolean).join(" · ");
+}
+function renderLibrary() {
+  // song source picker
+  const sel = $("#songItem"), keep = sel.value || store.get("songItem", "");
+  const usable = lib().filter((i) => ["vocal", "song"].includes(i.kind) || i.stem === "vocals");
+  sel.innerHTML = usable.length ? usable.map((i) => `<option value="${esc(i.id)}">${esc(i.name)} · ${esc(KIND_LABEL[i.kind] || i.kind)}${i.bpm ? ` · ${Math.round(i.bpm)} BPM` : ""}</option>`).join("")
+    : `<option value="">Nothing in your library yet</option>`;
+  if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  // working + pending
+  const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "tool" && !["done", "error", "stopped"].includes(j.phase));
+  const fresh = Object.entries(recentTools).filter(([, t]) => Date.now() - t.at < 25 * 60e3 && !(state && state.updated * 1000 > t.at + 60e3));
+  const pend = ((state && state.pending) || []).filter((r) => !deleting["link:" + r.id]);
+  $("#libWorking").innerHTML = (jobs.length || fresh.length || pend.length) ? `<div class="card">
+    ${jobs.map((j) => `<div class="working"><span class="dot on"></span>${esc(j.message || "Working")}</div>`).join("")}
+    ${!jobs.length ? fresh.map(([, t]) => `<div class="working"><span class="dot on"></span>${esc(t.label)}</div>`).join("") : ""}
+    ${pend.map((r) => `<div class="pending" style="margin-top:8px;display:flex;gap:10px;align-items:flex-start">
+       <div style="flex:1;min-width:0;overflow-wrap:anywhere"><span class="dim">${r.failed ? "Couldn't download:" : "Waiting for your PC:"}</span> ${esc(r.url)}
+       ${r.error ? `<div class="err">${esc(r.error)}</div>` : ""}</div>
+       <button class="ghost small" data-cancel="${esc(r.id)}">${r.failed ? "Dismiss" : "Cancel"}</button></div>`).join("")}
+    <div class="hint">Results show up below when they're done. ${pend.some((r) => !r.failed) ? "Waiting links download when GLORE is running on your PC." : ""}</div></div>` : "";
+  // list
+  const items = lib().filter((i) => !libFilter || i.kind === libFilter);
+  $("#libList").innerHTML = items.length ? items.map((i) => `<div class="item" data-id="${esc(i.id)}">
+      <div class="item-top"><b title="${esc(i.name)}">${esc(i.name)}</b><span class="tag ${esc(i.kind)}">${esc(KIND_LABEL[i.kind] || i.kind)}</span></div>
+      <div class="meta">${esc(itemMeta(i)) || "&nbsp;"}</div>
+      ${player(i.media)}
+      <div class="acts-row">
+        ${["vocal", "song"].includes(i.kind) ? `<button class="use" data-a="use">Use in song</button>` : ""}
+        ${i.kind !== "chops" && i.kind !== "stem" ? `<button class="ghost" data-a="stems">Stems</button>` : ""}
+        ${i.kind === "vocal" ? `<button class="ghost" data-a="clean">Clean</button>` : ""}
+        <button class="ghost" data-a="analyse">${i.bpm ? "Re-analyse" : "BPM & key"}</button>
+        <button class="ghost" data-a="lock">Tempo / pitch</button>
+        ${i.kind === "vocal" ? `<button class="ghost" data-a="chops">Chops</button>` : ""}
+        ${i.media ? `<span data-media="${esc(i.media)}" style="display:contents">${dl(i.media, i.name + ".mp3", "Save")}</span>` : ""}
+        <button class="ghost" data-a="delete" style="color:var(--danger)">Delete</button>
+      </div></div>`).join("")
+    : `<div class="empty">${lib().length ? "Nothing of that kind yet." : "Your library is empty. Add a vocal, a song or a link above."}</div>`;
+}
+
+function sheet(title, html, yes = "Run") { return new Promise((res) => {
+  $("#sTitle").textContent = title; $("#sBody").innerHTML = html; $("#sYes").textContent = yes; $("#sheet").classList.add("on");
+  const done = (v) => { $("#sheet").classList.remove("on"); res(v); };
+  $("#sNo").onclick = () => done(null);
+  $("#sYes").onclick = () => { const v = {}; $("#sBody").querySelectorAll("[name]").forEach((el) => {
+      v[el.name] = el.type === "checkbox" ? el.checked : el.value; }); done(v); };
+  $("#sBody").querySelectorAll(".pill-row[data-name]").forEach((row) => row.onclick = (e) => {
+    if (!e.target.dataset.v && e.target.dataset.v !== "") return;
+    row.querySelectorAll(".pill").forEach((p) => p.classList.toggle("on", p === e.target));
+    row.nextElementSibling.value = e.target.dataset.v; });
+  $("#sBody").querySelectorAll("input[type=range]").forEach((r) => { const out = r.parentElement.querySelector(".val");
+    if (out) r.oninput = () => out.textContent = r.dataset.fmt === "x" ? Number(r.value).toFixed(1) + "×" : (Number(r.value) > 0 ? "+" : "") + r.value; });
+}); }
+const pillField = (name, opts, val) => `<div class="pill-row" data-name="${name}">${opts.map(([v, l]) =>
+  `<span class="pill ${v === val ? "on" : ""}" data-v="${v}">${l}</span>`).join("")}</div><input type="hidden" name="${name}" value="${val}">`;
+
+async function runTool(op, item, sets = []) {
+  const args = [`--op ${op}`, `--item ${item.id}`, "--wait", ...sets.map((kv) => `--set ${kv}`)].join(" ");
+  await dispatch("tool", args);
+  recentTools[item.id + op] = { at: Date.now(), label: `${TOOL_WORD[op]}: ${item.name}` };
+  renderLibrary();
+  toast(`${TOOL_WORD[op]}… (a GPU starts if none is running, about 2–5 min)`);
+}
+
+async function libAction(a, item) {
+  if (a === "use") {
+    songSrc = "library"; setSrc(); $("#songItem").value = item.id;
+    songKind = item.kind === "song" ? "song" : "vocal"; setKind();
+    if (item.bpm) $("#songBpm").value = Math.round(item.bpm * 10) / 10;
+    if (item.key) $("#songKey").value = item.key;
+    return show("song");
+  }
+  if (a === "delete") {
+    if (await ask("Delete from your library?", `${item.name} is removed from the cloud volume. This can't be undone.`, "Delete"))
+      { queueDelete(item); toast(`Deleted ${item.name}`); }
+    return;
+  }
+  if (a === "analyse") return runTool("analyse", item);
+  if (a === "stems") {
+    if (!await ask("Split into stems?", `${item.name} → vocals, drums, bass and other, each added to your library.`, "Split")) return;
+    return runTool("stems", item);
+  }
+  if (a === "clean") {
+    const v = await sheet("Clean the vocal", `<p class="dim" style="font-size:14px;margin:0 0 6px">Each step runs a separate model, in this order.</p>
+      ${[["backing", "Remove backing vocals"], ["echo", "Remove echo / delay"], ["reverb", "Remove reverb"], ["noise", "Remove noise"]].map(([k, l]) =>
+        `<div class="toggle"><span>${l}</span><input type="checkbox" name="${k}" checked></div>`).join("")}`, "Clean");
+    if (!v) return;
+    const stages = ["backing", "echo", "reverb", "noise"].filter((k) => v[k]);
+    if (!stages.length) return toast("Pick at least one step", true);
+    return runTool("clean", item, [`stages=${stages.join(",")}`]);
+  }
+  if (a === "lock") {
+    const v = await sheet("Tempo and pitch", `
+      <div class="row"><div><label>From BPM</label><input name="source_bpm" type="number" inputmode="decimal" value="${item.bpm ? Math.round(item.bpm * 10) / 10 : ""}" placeholder="analyse first"></div>
+      <div><label>To BPM</label><input name="target_bpm" type="number" inputmode="decimal" value="${item.bpm ? Math.round(item.bpm) : 128}"></div></div>
+      <label>Pitch <span class="val">0</span></label><input type="range" name="pitch" min="-12" max="12" step="1" value="0">
+      <div class="hint">Stretching keeps the pitch; the pitch shift keeps the voice's character (formants). Within 0.5×–2× of the original tempo.</div>`, "Stretch");
+    if (!v) return;
+    if (!Number(v.source_bpm) || !Number(v.target_bpm)) return toast("Both BPMs are needed", true);
+    return runTool("lock", item, [`source_bpm=${Number(v.source_bpm)}`, `target_bpm=${Number(v.target_bpm)}`, `pitch=${Number(v.pitch)}`]);
+  }
+  if (a === "chops") {
+    const v = await sheet("Vocal chops", `
+      <label>Style</label>${pillField("style", [["house", "House"], ["rnb", "R&amp;B / Rap"], ["gospel", "Gospel / Soul"]], store.get("chopStyle", "house"))}
+      <div class="row"><div><label>BPM</label><input name="bpm" type="number" inputmode="decimal" value="${item.bpm ? Math.round(item.bpm * 10) / 10 : ""}" placeholder="needed"></div>
+      <div><label>Seed</label><input name="seed" type="number" inputmode="numeric" value="${Math.floor(Math.random() * 999)}"></div></div>
+      <label>Amount <span class="val">1.0×</span></label><input type="range" name="density" min="0.4" max="2" step="0.1" value="1" data-fmt="x">
+      <label>Slice length <span class="val">1.0×</span></label><input type="range" name="length" min="0.5" max="2" step="0.1" value="1" data-fmt="x">
+      <label>Pitch spread <span class="val">1.0×</span></label><input type="range" name="pitch_spread" min="1" max="2" step="0.1" value="1" data-fmt="x">
+      <div class="hint">Same seed = same chop. New seed = reshuffle. The result is a chops track at the vocal's tempo, in your library.</div>`, "Chop");
+    if (!v) return;
+    if (!Number(v.bpm)) return toast("Chops need a BPM: tap 'BPM & key' first or type one", true);
+    store.set("chopStyle", v.style);
+    const sets = ["style", "bpm", "seed", "density", "length", "pitch_spread"].map((k) => `${k}=${v[k]}`);
+    if (item.key) sets.push(`key=${item.key.replace(" ", "_")}`);
+    return runTool("chops", item, sets);
+  }
+}
+
+async function addToLibrary() {
+  const btn = $("#addBtn"), bar = $("#libBar"), fill = bar.querySelector("i");
+  const progress = (p, m) => { bar.style.display = "block"; fill.style.width = Math.round(p * 100) + "%"; btn.textContent = m; };
+  btn.disabled = true;
+  try {
+    if (addMode === "link") {
+      const url = $("#linkUrl").value.trim();
+      if (!/^https?:\/\/\S+$/.test(url)) throw new Error("Paste a full link (starting with https://)");
+      await dispatch("link", `--url ${url} --kind ${libKind}`);
+      $("#linkUrl").value = "";
+      toast(/soundcloud/.test(url) ? "Downloading from SoundCloud…" : "Queued: GLORE on your PC downloads it next time it runs");
+    } else {
+      const f = $("#libFile").files[0];
+      if (!f) throw new Error("Choose a file first");
+      if (f.size > 70 * 2 ** 20) throw new Error("That file is over 70 MB: export an MP3 or a shorter WAV");
+      progress(0.1, "Encrypting…");
+      const path = `uploads/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.bin`;
+      await uploadEncrypted(await encryptFile(await f.arrayBuffer()), path, progress);
+      await dispatch("import", `--upload ${path} --name ${argName(f.name)} --kind ${libKind}`);
+      progress(1, "Add"); $("#libFile").value = ""; $("#libFile").onchange();
+      toast("Uploaded. It shows in your library in a minute or two");
+    }
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = "Add"; setTimeout(() => bar.style.display = "none", 1500); }
+}
+
+function setSrc() {
+  document.querySelectorAll("#srcSeg span").forEach((x) => x.classList.toggle("on", x.dataset.s === songSrc));
+  $("#srcUpload").style.display = songSrc === "upload" ? "" : "none";
+  $("#srcLibrary").style.display = songSrc === "library" ? "" : "none";
+}
+function setKind() { document.querySelectorAll("#kindPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.k === songKind)); }
+function pills(sel, cb) { $(sel).onclick = (e) => { if (e.target.dataset.v === undefined) return;
+  document.querySelectorAll(sel + " .pill").forEach((p) => p.classList.toggle("on", p === e.target)); cb(e.target.dataset.v); }; }
+let songFx = store.get("songFx", "clean"), songChops = store.get("songChops", "");
+function initLibrary() {
+  $("#addSeg").onclick = (e) => { const m = e.target.dataset.s; if (!m) return; addMode = m;
+    document.querySelectorAll("#addSeg span").forEach((x) => x.classList.toggle("on", x.dataset.s === m));
+    $("#addFile").style.display = m === "file" ? "" : "none"; $("#addLink").style.display = m === "link" ? "" : "none"; };
+  $("#libFile").onchange = () => { const f = $("#libFile").files[0];
+    $("#libFileLabel").textContent = f ? `${f.name} · ${(f.size / 2 ** 20).toFixed(1)} MB` : "Tap to choose audio";
+    $("#libDrop").classList.toggle("has", !!f); };
+  $("#libKind").onclick = (e) => { const k = e.target.dataset.k; if (!k) return; libKind = k;
+    document.querySelectorAll("#libKind .pill").forEach((p) => p.classList.toggle("on", p.dataset.k === k)); };
+  $("#libFilter").onclick = (e) => { if (e.target.dataset.f === undefined) return; libFilter = e.target.dataset.f;
+    document.querySelectorAll("#libFilter .pill").forEach((p) => p.classList.toggle("on", p === e.target)); renderLibrary(); };
+  $("#addBtn").onclick = addToLibrary;
+  $("#libWorking").onclick = async (e) => { const id = e.target.dataset.cancel; if (!id) return;
+    deleting["link:" + id] = Date.now(); store.set("deleting", JSON.stringify(deleting)); renderLibrary();
+    try { await dispatch("link", `--cancel ${id}`); } catch (err) { delete deleting["link:" + id]; renderLibrary(); toast(err.message, true); } };
+  $("#libList").onclick = (e) => { const b = e.target.closest("button[data-a]"); if (!b) return;
+    const item = lib().find((i) => i.id === b.closest(".item").dataset.id);
+    if (item) libAction(b.dataset.a, item).catch((err) => toast(err.message, true)); };
+  $("#srcSeg").onclick = (e) => { if (!e.target.dataset.s) return; songSrc = e.target.dataset.s; setSrc(); };
+  $("#songItem").onchange = () => { const i = lib().find((x) => x.id === $("#songItem").value); store.set("songItem", $("#songItem").value);
+    if (i) { songKind = i.kind === "song" ? "song" : "vocal"; setKind();
+      if (i.bpm) $("#songBpm").value = Math.round(i.bpm * 10) / 10; if (i.key) $("#songKey").value = i.key; } };
+  pills("#fxPills", (v) => { songFx = v; store.set("songFx", v); });
+  pills("#chopPills", (v) => { songChops = v; store.set("songChops", v); });
+  document.querySelectorAll("#fxPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.v === songFx));
+  document.querySelectorAll("#chopPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.v === songChops));
+  const slide = (id, fmt) => { const r = $("#" + id); r.value = store.get(id, r.value);
+    const upd = () => { $("#" + id + "Val").textContent = fmt(Number(r.value)); store.set(id, r.value); }; r.oninput = upd; upd(); };
+  slide("reverb", (v) => Math.round(v * 100)); slide("delay", (v) => Math.round(v * 100));
+  slide("chopDen", (v) => v.toFixed(1) + "×"); slide("vocDb", (v) => (v > 0 ? "+" : "") + v + " dB");
+}
+
+// ------------------------------------------------------------- boot
+function show(v) {
+  document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === "v-" + v));
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
+  $("#nav").style.display = v === "setup" ? "none" : "flex";
+  if (v !== "setup") store.set("view", v);
+}
+function initForm() {
+  const keys = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  $("#key").innerHTML = `<option value="">Any</option>` + keys.flatMap((k) => [`<option>${k} minor</option>`, `<option>${k} major</option>`]).join("");
+  $("#key").value = store.get("key", "A minor");
+  $("#prompt").value = store.get("prompt", "");
+  $("#countPills").innerHTML = [1, 2, 3, 4].map((n) => `<span class="pill ${n === takesCount ? "on" : ""}" data-n="${n}">${n}</span>`).join("");
+  $("#countPills").onclick = (e) => { const n = e.target.dataset.n; if (!n) return; takesCount = Number(n);
+    document.querySelectorAll("#countPills .pill").forEach((p) => p.classList.toggle("on", p.dataset.n === n)); };
+  $("#scale").oninput = () => $("#scaleVal").textContent = Number($("#scale").value).toFixed(2);
+  $("#key").onchange = () => store.set("key", $("#key").value);
+}
+async function connect() {
+  cfg.token = $("#tok").value.trim(); cfg.key = $("#wkey").value; cfg.repo = $("#repo").value.trim() || "Astr0h/GLORE";
+  if (!cfg.token || !cfg.key) return toast("Fill in the token and the key", true);
+  try { await gh(""); } catch (e) { return toast(e.message, true); }
+  store.set("token", cfg.token); store.set("key", cfg.key); store.set("repo", cfg.repo);
+  start();
+}
+async function start() {
+  show(store.get("view", "song"));
+  try { await loadState(); } catch (e) { toast(e.message, true); }
+  if (!state) toast("No status yet: tap ↻ to ask the cloud for one");
+  pollRuns();
+  setInterval(pollRuns, 20000);
+  // While GPUs run, keep the status file fresh (a small status run every 4 min while the app is open)
+  setInterval(() => { if (document.visibilityState === "visible" && state && (state.active_pods || []).length &&
+                          !runs.some((r) => r.status !== "completed")) dispatch("status").catch(() => {}); }, 240000);
+}
+
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => show(b.dataset.v));
+$("#connectBtn").onclick = connect;
+$("#genBtn").onclick = generate;
+$("#trainBtn").onclick = train;
+$("#refreshBtn").onclick = async () => { try { await dispatch("status"); toast("Asking the cloud for fresh status…"); } catch (e) { toast(e.message, true); } };
+$("#checkBtn").onclick = async () => { try { await dispatch("check"); toast("Connection check started"); } catch (e) { toast(e.message, true); } };
+$("#stopBtn").onclick = async () => { if (await ask("Stop all GPUs?", "Anything running stops now. Training keeps its checkpoints.", "Stop"))
+  try { await dispatch("stop"); toast("Stopping…"); } catch (e) { toast(e.message, true); } };
+$("#logoutBtn").onclick = async () => { if (await ask("Disconnect this device?", "Removes the token and key from this browser.", "Disconnect")) {
+  ["token", "key"].forEach(store.del); location.reload(); } };
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && cfg.token) pollRuns(); });
+initForm();
+initSong();
+initLibrary();
+if (cfg.token && cfg.key) start(); else show("setup");
+</script>
+</body>
+</html>

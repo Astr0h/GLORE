@@ -4,6 +4,10 @@ Binds to 127.0.0.1 only; nothing leaves your machine."""
 from __future__ import annotations
 
 import argparse
+import json
+import logging
+import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -17,7 +21,8 @@ from . import __version__
 from .analysis import analyse, parse_key, key_name, camelot
 from .audio_io import SUPPORTED_EXTENSIONS, load_stereo, save_wav, duration_seconds
 from .project import ProjectStore, Source, Layer, JobRunner, KINDS, PACKS, new_id
-from . import separation, cleanup, linkimport, datasets, tracklist
+from . import separation, cleanup, linkimport, datasets, tracklist, cloud, training, generate as gen
+from .cloud import CloudError, CloudManager
 from .vocal_lock import lock_vocal
 
 
@@ -67,6 +72,87 @@ class TrackListBody(BaseModel):
     csv_text: str | None = None
 
 
+class CloudSettingsBody(BaseModel):
+    api_key: str | None = None
+    s3_access_key: str | None = None
+    s3_secret: str | None = None
+    datacenter: str | None = None
+    volume_id: str | None = None
+    volume_gb: int | None = None
+    idle_minutes: float | None = None
+    hard_cap_hours: float | None = None
+    monthly_limit: float | None = None
+    gpu: str | None = None
+    variant: str | None = None
+    image: str | None = None
+
+
+class GenerateBody(BaseModel):
+    pack: str = "house"
+    lora_run: str | None = None   # default: the pack's newest LoRA
+    use_lora: bool = True
+    caption: str | None = None    # default: pack name (+ moods)
+    bpm: float | None = None      # default: project BPM
+    key: str | None = None        # default: project key
+    duration: float = 60.0
+    seed: int = -1
+    count: int = 1
+    scale: float = 1.0
+    lm: str | None = "acestep-5Hz-lm-1.7B"   # song planner; None = DiT only (faster, much less musical)
+    rewrite_caption: bool = True             # planner expands the prompt into a full description
+    velocity_norm: float = 0.0               # >0 (e.g. 2.0) tames harsh / metallic artefacts
+    model: str | None = None                 # turbo | base | sft (no LoRA); default the LoRA's own / turbo
+    export_dir: str | None = None
+
+
+class AroundVocalBody(BaseModel):
+    source_id: str | None = None   # default: the locked vocal, else the newest vocal
+    caption: str = "soft house"
+    tracks: list[str] | None = None
+    seed: int = -1
+    steps: int = 50
+    guidance: float = 7.0
+    beat_gain_db: float = -3.0
+    export_dir: str | None = None  # also write an MP3 of the mix here
+
+
+class VocalOverBeatBody(BaseModel):
+    beat_layer: str
+    vocal_source: str
+    grid_source: str | None = None
+    beat_bpm: float | None = None
+    vocal_gain_db: float = -2.0
+    beat_gain_db: float = 0.0
+    arrange: bool = True          # replay the original song's breakdowns / drops on the beat
+    export_dir: str | None = None
+    name: str | None = None
+
+
+class FromSongBody(BaseModel):
+    vocal_source: str
+    grid_source: str | None = None   # default: the song the vocal was extracted from (BPM / key)
+    source: str = "vocal"            # vocal = build a new beat around the a cappella; instrumental = restyle the old beat
+    pack: str = "house"
+    lora_run: str | None = None
+    use_lora: bool = True
+    caption: str | None = None
+    strength: float = 0.5            # how closely the result follows the source audio (0-1)
+    seed: int = -1
+    scale: float = 1.0
+    vocal_gain_db: float = -3.0
+    beat_gain_db: float = 0.0
+    export_dir: str | None = None
+    name: str | None = None
+
+
+class TrainBody(BaseModel):
+    epochs: int | None = None   # default: picked from the track count
+    rank: int | None = None     # default 64
+    audio: str = "prepared"     # prepared (vocals stripped) | full (original tracks, chops kept)
+    autolabel: bool = False     # ACE-Step's planner writes a caption per track before training
+    save_every: int | None = None
+
+
 class LockBody(BaseModel):
     source_id: str
     target_bpm: float | None = None  # defaults to project BPM
@@ -74,11 +160,14 @@ class LockBody(BaseModel):
 
 
 
-def create_app(store: ProjectStore | None = None) -> FastAPI:
+def create_app(store: ProjectStore | None = None, cloud_manager: CloudManager | None = None,
+               resume_cloud: bool = True) -> FastAPI:
     app = FastAPI(title="GLORE engine", version=__version__)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.state.store = store or ProjectStore()
     app.state.jobs = JobRunner()
+    app.state.cloud = cloud_manager or CloudManager()
+    app.state.cloud_jobs = {}  # "train:<pack>" / "fit:<pack>" / "test" / "volume" -> engine job id
 
     def S() -> ProjectStore:
         return app.state.store
@@ -214,7 +303,11 @@ def create_app(store: ProjectStore | None = None) -> FastAPI:
     # ------------------------------------------------- genre tags / datasets
     @app.get("/packs")
     def packs():
-        return datasets.summary()
+        out = datasets.summary()
+        for p in out:
+            p["loras"] = [{k: l.get(k) for k in ("run_id", "trained_at", "tracks", "epochs", "loss", "variant", "path")}
+                          for l in training.list_loras(p["id"])]
+        return out
 
     @app.post("/sources/{source_id}/tag")
     def tag_source(source_id: str, body: TagBody):
@@ -407,6 +500,210 @@ def create_app(store: ProjectStore | None = None) -> FastAPI:
             return S().project.vocal_lock
 
         return {"job_id": app.state.jobs.start("vocal_lock", work).id}
+
+
+    # ------------------------------------------------------------ cloud GPU
+    def _cloud_job(key: str, kind: str, fn, gpu: bool = False):
+        cur = app.state.cloud_jobs.get(key)
+        if cur and app.state.jobs.jobs.get(cur) and app.state.jobs.jobs[cur].status == "running":
+            raise HTTPException(409, "Already running")
+
+        def work(report):
+            try:
+                return fn(report)
+            except CloudError as e:
+                raise RuntimeError(str(e)) from None
+
+        job = app.state.jobs.start(kind, work, gpu=gpu)
+        app.state.cloud_jobs[key] = job.id
+        return {"job_id": job.id}
+
+    def _cloud_errors(fn):
+        try:
+            return fn()
+        except CloudError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/cloud/settings")
+    def cloud_settings():
+        return cloud.public_settings()
+
+    @app.put("/cloud/settings")
+    def cloud_settings_put(body: CloudSettingsBody):
+        return _cloud_errors(lambda: cloud.public_settings(cloud.save_settings(body.model_dump(exclude_none=True))))
+
+    @app.get("/cloud/status")
+    def cloud_status():
+        st = _cloud_errors(app.state.cloud.status)
+        st["jobs"] = {k: v for k, v in app.state.cloud_jobs.items()
+                      if app.state.jobs.jobs.get(v) and app.state.jobs.jobs[v].status == "running"}
+        return st
+
+    @app.get("/cloud/quote")
+    def cloud_quote():
+        """What a training run would use and could cost at most, before you press go."""
+        def q():
+            s = cloud.load_settings()
+            if cloud.missing(s):
+                raise CloudError("Finish the cloud settings first")
+            gpu, price = cloud.pick_gpu(app.state.cloud.rp().gpus(), s["datacenter"], s["gpu"])
+            return {"gpu": gpu, "price_per_hr": price, "hard_cap_hours": s["hard_cap_hours"],
+                    "max_cost": round(price * float(s["hard_cap_hours"]), 2),
+                    "month_spend": app.state.cloud.month_spend(), "monthly_limit": s["monthly_limit"]}
+        return _cloud_errors(q)
+
+    @app.post("/cloud/volume")
+    def cloud_volume():
+        return _cloud_job("volume", "cloud_volume", lambda r: training.setup_volume(app.state.cloud, r))
+
+    @app.post("/cloud/test")
+    def cloud_test():
+        return _cloud_job("test", "cloud_test", lambda r: training.connection_test(app.state.cloud, r))
+
+    @app.post("/cloud/stop")
+    def cloud_stop():
+        return {"stopped": _cloud_errors(app.state.cloud.stop_all)}
+
+    @app.post("/generate")
+    def generate_ep(body: GenerateBody):
+        if body.pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        if not 10 <= body.duration <= 480:
+            raise HTTPException(400, "Length must be 10-480 seconds")
+        if not 1 <= body.count <= 4:
+            raise HTTPException(400, "1-4 takes")
+        if not 0 <= body.scale <= 1.5:
+            raise HTTPException(400, "LoRA strength must be 0-1.5")
+        if body.bpm is not None and not 30 <= body.bpm <= 300:
+            raise HTTPException(400, "BPM must be 30-300")
+
+        def work(report):
+            try:
+                return gen.generate(S(), report, **body.model_dump())
+            except gen.GenerateError as e:
+                raise RuntimeError(str(e)) from None
+
+        return _cloud_job("generate", "generate", work, gpu=True)
+
+    @app.post("/generate/around-vocal")
+    def generate_around(body: AroundVocalBody):
+        if not 8 <= body.steps <= 100:
+            raise HTTPException(400, "Steps must be 8-100")
+
+        def work(report):
+            try:
+                return gen.generate_around_vocal(S(), report, **body.model_dump())
+            except gen.GenerateError as e:
+                raise RuntimeError(str(e)) from None
+
+        return _cloud_job("generate", "generate_around_vocal", work, gpu=True)
+
+    @app.post("/generate/from-song")
+    def generate_from_song(body: FromSongBody):
+        def work(report):
+            try:
+                return gen.generate_from_song(S(), report, **body.model_dump())
+            except (gen.GenerateError, KeyError, ValueError) as e:
+                raise RuntimeError(str(e)) from None
+
+        return {"job_id": app.state.jobs.start("generate_from_song", work, gpu=True).id}
+
+    @app.post("/mix/vocal-over-beat")
+    def vocal_over_beat(body: VocalOverBeatBody):
+        def work(report):
+            try:
+                return gen.mix_vocal_over_beat(S(), report, **body.model_dump())
+            except (gen.GenerateError, KeyError, ValueError) as e:
+                raise RuntimeError(str(e)) from None
+
+        return {"job_id": app.state.jobs.start("vocal_over_beat", work).id}
+
+    @app.get("/logs/{name}")
+    def log_tail(name: str, lines: int = 80):
+        """End of a GLORE log, for the app's log viewer and for remote help."""
+        home = training.glore_home()
+        files = {"fit-test": home / "fit-test" / "log.txt", "ace-install": home / "ace-install.log"}
+        if name == "generate":
+            logs = sorted((S().root / "generated").glob("*.log"), key=lambda f: f.stat().st_mtime)
+            path = logs[-1] if logs else None
+        elif name.startswith("cloud-"):
+            path = cloud.home() / f"log-{name[6:]}.txt"
+        else:
+            path = files.get(name)
+        if not path or not path.exists():
+            raise HTTPException(404, "No such log yet")
+        text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return {"path": str(path), "text": "\n".join(text[-max(1, min(lines, 2000)):])}
+
+    @app.get("/loras/{run_id}/captions")
+    def lora_captions(run_id: str):
+        """The captions ACE-Step's planner wrote for each training track (auto-labelled runs)."""
+        info = next((l for l in training.list_loras() if l.get("run_id") == run_id), None)
+        if not info:
+            raise HTTPException(404, "Unknown LoRA")
+        path = info.get("captions")
+        if not path or not Path(path).exists():
+            raise HTTPException(404, "This LoRA has no captions")
+        items = {i["id"]: i.get("name") for i in datasets.list_items(info["pack"])} if info.get("pack") else {}
+        caps = json.loads(Path(path).read_text(encoding="utf-8"))
+        return [{"id": k, "track": items.get(k), **v} for k, v in caps.items()]
+
+    @app.get("/loras")
+    def loras():
+        return training.list_loras()
+
+    @app.post("/datasets/{pack}/train")
+    def dataset_train(pack: str, body: TrainBody | None = None):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        b = body or TrainBody()
+        if b.epochs is not None and not 1 <= b.epochs <= 2000:
+            raise HTTPException(400, "Epochs must be between 1 and 2000")
+        if b.rank is not None and b.rank not in (8, 16, 32, 64, 128):
+            raise HTTPException(400, "Rank must be 8, 16, 32, 64 or 128")
+        if b.audio not in ("prepared", "full"):
+            raise HTTPException(400, "audio must be prepared or full")
+        if cloud.missing(cloud.load_settings()):
+            raise HTTPException(400, "Finish the cloud settings first")
+        return _cloud_job(f"train:{pack}", "train_lora",
+                          lambda r: training.train_cloud(pack, app.state.cloud, r, b.epochs, b.rank,
+                                                         audio=b.audio, autolabel=b.autolabel,
+                                                         save_every=b.save_every))
+
+    @app.post("/datasets/{pack}/fit-test")
+    def dataset_fit_test(pack: str):
+        if pack not in PACKS:
+            raise HTTPException(404, "Unknown pack")
+        return _cloud_job(f"fit:{pack}", "fit_test", lambda r: training.fit_test(pack, r), gpu=True)
+
+    def _resume_cloud():
+        """After a restart: keep the safety net on any pods still up, and pick up runs in flight."""
+        if cloud.missing(cloud.load_settings()):
+            return
+        try:
+            app.state.cloud.resume_watching()
+        except Exception:
+            pass
+        for job_id, run in training.pending_runs().items():
+            _cloud_job(f"train:{run['pack']}", "train_lora",
+                       lambda r, j=job_id: training.follow(j, app.state.cloud, r))
+        threading.Thread(target=_link_helper, daemon=True, name="glore-links").start()
+
+    def _link_helper():
+        """GLORE Web can't download from YouTube (it blocks cloud servers), so links pasted on your phone wait
+        on the cloud volume; while GLORE runs on this PC it fetches them at home and uploads them."""
+        from . import cloud_cli
+        log = logging.getLogger("glore.links")
+        while True:
+            try:
+                vol = app.state.cloud.volume()
+                cloud_cli.process_pending_links(vol, report=log.info)
+            except Exception as e:  # offline, no settings yet, ...: just try again later
+                log.debug("link helper: %s", e)
+            time.sleep(60)
+
+    if resume_cloud:
+        _resume_cloud()
 
     # ----------------------------------------------------------------- jobs
     @app.get("/jobs/{job_id}")

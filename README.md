@@ -2,7 +2,7 @@
 
 *Glór* — voice. Build house and melodic rap tracks around your own vocals and samples, locally on your GPU.
 
-Full feature spec: [docs/SPEC.md](docs/SPEC.md)
+Full feature spec: [docs/SPEC.md](docs/SPEC.md) · Status and next steps: [docs/HANDOFF.md](docs/HANDOFF.md)
 
 ## First-time setup (Windows)
 
@@ -35,17 +35,37 @@ Then double-click `Setup GLORE.bat` again. It skips what's already installed, so
 - **Raw vocal:** on any vocal, choose what to strip (backing vocals, echo, reverb, noise), then click *Make raw*. The first use of each option downloads its model (about 0.1–0.9 GB each).
 - **Training tags:** *+ Train* on any sample adds it to a genre pack (House, R&B / Rap, Gospel / Soul) with mood tags.
 - **Import list:** on the LoRA Packs page. In the track-list sheet, download it as CSV, then click *Import list* on the pack. GLORE finds and downloads every ticked track and tags it with its Tag. Tracks it can't find are listed under the pack. Running it again skips what's already there.
-- **LoRA Packs page** (bottom of the sidebar): track counts per pack, plus *Prepare*, which strips vocals ready for training. *Train LoRA* arrives with Generate.
+- **LoRA Packs page** (bottom of the sidebar): track counts per pack, plus *Prepare*, which strips vocals ready for training.
+
+## New in session 3: cloud LoRA training
+*Train LoRA* now works. It uploads a pack's prepared tracks to RunPod, trains an ACE-Step 1.5 LoRA on a rented GPU (an A100 80GB by default, about $2.19/h), and downloads the result. The GPU switches itself off when it's done.
+
+**One-time setup (about 10 minutes):**
+1. Make a RunPod account at runpod.io and add some credit ($10 is plenty to start).
+2. RunPod console → **Settings → API Keys** → create a key (permission: All). Paste it into **RunPod API key** on the LoRA Packs page.
+3. RunPod console → **Settings → S3 API Keys** → create one. Paste the `user_…` id shown with it into **S3 access key**, and the secret into **S3 secret**.
+4. Click **Create** next to *Network volume*. That's GLORE's cloud storage: 50 GB costs about $3.50 a month whether or not you train.
+5. Click **Save**, then **Test**. It starts the cheapest GPU for about 2 minutes to check everything (about a cent).
+
+**Training:** *Prepare* the pack, then *Train LoRA*. GLORE tells you the most it can cost before it starts. The first run also installs ACE-Step on the volume (about 10 extra minutes, once). You can close GLORE while it trains: the GPU stops itself, and GLORE picks the run up again when you reopen it.
+
+**Safety nets:** the GPU shuts down after 10 idle minutes and always at the hard cap (4 h by default). GLORE also stops it if it stops responding or the monthly limit ($20 by default) is reached. **Stop** on the Cloud GPU panel shuts everything down immediately. A run cut short keeps its checkpoints: press *Train LoRA* again and it carries on.
+
+**8 GB test:** trains on 3 tracks on your own PC for 5 minutes and reports whether it fits in VRAM. The first time it downloads ACE-Step and its models (~13 GB).
+
+LoRAs are saved in `%APPDATA%\GLORE\loras\`.
 
 ## If something goes wrong
 - **Stuck on "Starting engine…":** click *Open engine log* and send Claude what's in it.
 - **"CPU only — CUDA not found"** in the top right: update your NVIDIA driver and re-run setup.
 - Projects live in `%APPDATA%\GLORE\projects\`.
+- **Cloud test or training fails:** the message says which part (key, storage, GPU). For a training error, the end of the cloud log is saved in `%APPDATA%\GLORE\cloud\` as `log-….txt`. Send it to Claude.
 
 ## Layout
 ```
 app/       Electron desktop app (UI)   - theme colours live at the top of app/renderer/styles.css
-engine/    Python audio engine          - analysis, separation, time-stretch
+engine/    Python audio engine          - analysis, separation, time-stretch, cloud training
+  glore_engine/pod/  what runs on the cloud GPU (uploaded to the network volume by GLORE)
 scripts/   setup.ps1
 docs/      SPEC.md
 ```

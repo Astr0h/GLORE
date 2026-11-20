@@ -1,0 +1,92 @@
+# GLORE cloud, without your PC: train LoRAs and render takes on RunPod from GitHub.
+# Run it from the Actions tab (or `gh workflow run glore-cloud.yml -f command=status`).
+# Needs these repo secrets (Settings -> Secrets and variables -> Actions):
+#   GLORE_RUNPOD_API_KEY, GLORE_S3_ACCESS_KEY, GLORE_S3_SECRET, GLORE_VOLUME_ID, GLORE_DATACENTER
+# optional: GLORE_GPU, GLORE_MONTHLY_LIMIT (USD, default 30)
+name: GLORE cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "status | check | du | grow | train | generate | song | import | link | library | tool | fetch | loras | log | stop  (every run also refreshes GLORE Web)"
+        required: true
+        default: status
+      args:
+        description: "Extra arguments, e.g. --variant xl_sft --epochs 200 (train) or --job <id> --wait (fetch)"
+        required: false
+        default: ""
+      takes:
+        description: "generate / song: JSON list of takes [{name, caption, lora?, scale?, seed, duration, bpm, key}]"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # to publish the encrypted state file GLORE Web reads (branch glore-state)
+  actions: read
+
+# No concurrency group on purpose: GitHub keeps only one waiting run per group and cancels the rest,
+# which silently dropped quick taps in GLORE Web (several deletes, a tool then a song...).
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      GLORE_RUNPOD_API_KEY: ${{ secrets.GLORE_RUNPOD_API_KEY }}
+      GLORE_S3_ACCESS_KEY: ${{ secrets.GLORE_S3_ACCESS_KEY }}
+      GLORE_S3_SECRET: ${{ secrets.GLORE_S3_SECRET }}
+      GLORE_VOLUME_ID: ${{ secrets.GLORE_VOLUME_ID }}
+      GLORE_DATACENTER: ${{ secrets.GLORE_DATACENTER }}
+      GLORE_GPU: ${{ secrets.GLORE_GPU }}
+      GLORE_MONTHLY_LIMIT: ${{ secrets.GLORE_MONTHLY_LIMIT }}
+      GLORE_WEB_KEY: ${{ secrets.GLORE_WEB_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the few packages the cloud CLI needs
+        run: |
+          pip install --quiet "boto3>=1.35" "cryptography>=42" imageio-ffmpeg
+          if [ "${{ inputs.command }}" = "link" ]; then pip install --quiet -U "yt-dlp[default]" imageio-ffmpeg; fi
+      - name: Run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CMD: ${{ inputs.command }}
+          ARGS: ${{ inputs.args }}
+          TAKES: ${{ inputs.takes }}
+        run: |
+          set -eo pipefail
+          export GLORE_HOME="$RUNNER_TEMP/glore-home"
+          extra=()
+          if [ "$CMD" = "generate" ] || [ "$CMD" = "song" ]; then
+            printf '%s' "$TAKES" > "$RUNNER_TEMP/takes.json"
+            extra=(--takes "$RUNNER_TEMP/takes.json" --out "$GITHUB_WORKSPACE/out")
+          fi
+          if [ "$CMD" = "fetch" ]; then extra=(--out "$GITHUB_WORKSPACE/out"); fi
+          # ARGS is split on spaces on purpose (flags only, no quoting needed)
+          python -m glore_engine.cloud_cli "$CMD" "${extra[@]}" $ARGS | tee "$RUNNER_TEMP/output.txt"
+      - name: Refresh GLORE Web
+        if: always() && env.GLORE_WEB_KEY != ''
+        run: |
+          set -e
+          python -m glore_engine.cloud_cli publish-state --out "$RUNNER_TEMP/state/state.json" \
+            --media-remote "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          cd "$RUNNER_TEMP/state"
+          git init -q -b glore-state
+          git add state.json
+          git -c user.name="glore-bot" -c user.email="glore-bot@users.noreply.github.com" commit -qm "GLORE state"
+          # several runs can finish at once: retry, last one wins (they all publish the same volume)
+          for i in 1 2 3; do git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" glore-state && break; sleep $((i * 3)); done
+      - name: Keep the takes
+        if: always() && (inputs.command == 'generate' || inputs.command == 'song' || inputs.command == 'fetch')
+        uses: actions/upload-artifact@v4
+        with:
+          name: glore-takes
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 14

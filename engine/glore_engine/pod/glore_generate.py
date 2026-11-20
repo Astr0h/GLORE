@@ -26,6 +26,19 @@ import time
 import traceback
 
 
+def safe_lora_path(path: str) -> str:
+    """ACE names the adapter after its folder and PEFT refuses dots ("epoch_50_loss_0.7759"):
+    hand it a dot-free link to the same folder."""
+    import os
+    import tempfile
+    name = os.path.basename(os.path.normpath(path))
+    if "." not in name:
+        return path
+    link = os.path.join(tempfile.mkdtemp(prefix="glore_lora_"), name.replace(".", "_"))
+    os.symlink(os.path.abspath(path), link, target_is_directory=True)
+    return link
+
+
 def say(p: float, msg: str) -> None:
     print(f"GLORE_PROGRESS {p:.3f} {msg}", flush=True)
 
@@ -95,7 +108,7 @@ def main(job_path: str) -> int:
     lora = job.get("lora")
     if lora:
         say(0.25, "Loading the LoRA")
-        m = dit.load_lora(lora["path"])
+        m = dit.load_lora(safe_lora_path(lora["path"]))
         if not str(m).startswith("✅"):
             raise RuntimeError(f"LoRA didn't load: {m}")
         dit.set_use_lora(True)

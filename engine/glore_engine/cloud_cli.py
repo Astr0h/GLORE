@@ -225,6 +225,120 @@ def take_upload(path: str) -> bytes:
     return raw
 
 
+# ---------------------------------------------------------------- the library (everything you bring in)
+
+LIB = "library"
+KINDS = ("vocal", "song", "beat", "stem", "chops", "other")
+
+
+def _ffmpeg() -> str:
+    import shutil
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    from .linkimport import ffmpeg_path
+    return ffmpeg_path()
+
+
+def to_flac(src: Path, dest: Path) -> float:
+    """Any audio -> 44.1 kHz stereo FLAC; returns the duration in seconds."""
+    import subprocess
+    subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "2", "-ar", "44100",
+                    "-sample_fmt", "s16", str(dest)], check=True)
+    out = subprocess.run([_ffmpeg(), "-i", str(dest)], capture_output=True, text=True).stderr
+    import re
+    m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", out)
+    return int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]) if m else 0.0
+
+
+def safe_file(name: str) -> str:
+    return "".join(c for c in Path(name or "audio").name if c.isalnum() or c in " ._-()&'").strip()[:80] or "audio"
+
+
+def library_add(vol: cloud.Volume, path: Path, name: str, kind: str, origin: str, **extra) -> dict:
+    """Store a file (any format) in the library as FLAC, with a little item.json beside it."""
+    item_id = uuid.uuid4().hex[:10]
+    stem = Path(safe_file(name)).stem or "audio"
+    with tempfile.TemporaryDirectory() as tmp:
+        flac = Path(tmp) / f"{stem}.flac"
+        dur = to_flac(path, flac)
+        key = f"{LIB}/{item_id}/{flac.name}"
+        vol.put_file(key, flac)
+    item = {"id": item_id, "name": stem, "kind": kind if kind in KINDS else "other", "file": key,
+            "duration": round(dur, 2), "origin": origin, "created": time.time(), **extra}
+    vol.put_bytes(f"{LIB}/{item_id}/item.json", json.dumps(item).encode())
+    return item
+
+
+def library_items(vol: cloud.Volume) -> list[dict]:
+    items = []
+    for k in vol.list_keys(f"{LIB}/"):
+        if k.endswith("/item.json"):
+            raw = vol.get_bytes(k)
+            if raw:
+                items.append(json.loads(raw))
+    return sorted(items, key=lambda i: i.get("created", 0), reverse=True)
+
+
+def library_get(vol: cloud.Volume, item_id: str) -> dict:
+    raw = vol.get_bytes(f"{LIB}/{item_id}/item.json")
+    if not raw:
+        raise CloudError(f"No library item {item_id}")
+    return json.loads(raw)
+
+
+def cmd_import(a) -> dict:
+    """A file uploaded from GLORE Web -> the library."""
+    key = os.environ.get("GLORE_WEB_KEY", "")
+    if not key:
+        raise CloudError("GLORE_WEB_KEY is needed to decrypt uploads")
+    vol = manager().volume()
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / safe_file(a.name or "upload")
+        src.write_bytes(decrypt_upload(take_upload(a.upload), key))
+        item = library_add(vol, src, a.name or src.name, a.kind, "upload")
+    print(json.dumps(item, indent=2))
+    return item
+
+
+def cmd_link(a) -> dict:
+    """YouTube / SoundCloud / Spotify / Apple Music link -> the library (downloaded right here on the runner)."""
+    from .linkimport import LinkError, fetch_link
+    vol = manager().volume()
+    last = [0.0]
+
+    def report(p, m):
+        if p - last[0] >= 0.2:
+            last[0] = p
+            print(f"  {m} {p:.0%}")
+    try:
+        wav, info, tmp = fetch_link(a.url, report)
+    except LinkError as e:
+        raise CloudError(str(e)) from e
+    try:
+        name = f"{info.artist} - {info.title}" if info.artist and info.title else (info.title or "Imported")
+        item = library_add(vol, wav, name, a.kind, "link", url=a.url, service=info.service,
+                           title=info.title, artist=info.artist, matched=info.matched)
+    finally:
+        tmp.cleanup()
+    print(json.dumps(item, indent=2))
+    return item
+
+
+def cmd_library(a) -> dict:
+    vol = manager().volume()
+    if a.delete:
+        item = library_get(vol, a.delete)
+        for k in vol.list_keys(f"{LIB}/{item['id']}/"):
+            vol.delete(k)
+        print(f"Deleted {item['name']}")
+        return {"deleted": item["id"]}
+    items = library_items(vol)
+    for i in items:
+        print(f"{i['id']}  {i['kind']:<6} {i.get('duration', 0):6.0f}s  {i['name']}")
+    return {"items": items}
+
+
 def cmd_song(a) -> dict:
     """Your vocal (or a whole song, vocal taken out) -> beats built around it, mixed, as MP3s."""
     key = os.environ.get("GLORE_WEB_KEY", "")
@@ -442,8 +556,14 @@ def build_state(mgr: CloudManager, link_days: int = 7, max_jobs: int = 25) -> di
             f"e{glore_pod.checkpoint_epoch(parts[4])}" if parts[3] == "checkpoints" else None)
         if name:
             loras.setdefault(parts[2], {"pack": parts[1], "points": []})["points"].append(name)
+    library = []
+    for it in library_items(vol)[:200]:
+        it = dict(it)
+        it["url"] = vol.s3.generate_presigned_url("get_object", Params={"Bucket": vol.bucket, "Key": it["file"]},
+                                                  ExpiresIn=link_days * 86400)
+        library.append(it)
     s = mgr.settings()
-    return {"updated": time.time(), "jobs": jobs[:max_jobs], "loras": loras,
+    return {"updated": time.time(), "jobs": jobs[:max_jobs], "loras": loras, "library": library,
             "active_pods": mgr.ledger.active(), "month_spend": mgr.month_spend(),
             "monthly_limit": s.get("monthly_limit"), "gpu_pref": s.get("gpu"), "datacenter": s.get("datacenter")}
 
@@ -522,6 +642,15 @@ def main(argv: list[str] | None = None) -> int:
     lo.add_argument("--pack", default="house")
     sub.add_parser("stop")
     sub.add_parser("check")
+    im = sub.add_parser("import")
+    im.add_argument("--upload", required=True)
+    im.add_argument("--name", default="")
+    im.add_argument("--kind", default="vocal")
+    li = sub.add_parser("link")
+    li.add_argument("--url", required=True)
+    li.add_argument("--kind", default="song")
+    lb = sub.add_parser("library")
+    lb.add_argument("--delete")
     so = sub.add_parser("song")
     so.add_argument("--upload", help="path in the glore-uploads branch (from GLORE Web)")
     so.add_argument("--source", help="or: a file already on the volume")
@@ -548,7 +677,8 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
-         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song}[a.cmd](a)
+         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
+                "import": cmd_import, "link": cmd_link, "library": cmd_library}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

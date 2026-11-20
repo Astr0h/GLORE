@@ -390,6 +390,14 @@ def cmd_grow(a) -> dict:
     return out
 
 
+def cmd_log(a) -> dict:
+    """The end of a job's log (what went wrong)."""
+    vol = cloud.Volume(env_settings())
+    text = vol.tail(f"glore/runs/{a.job}/log.txt", int(a.bytes))
+    print(text or "(no log)")
+    return {"log": text}
+
+
 def cmd_stop(a) -> dict:
     mgr = manager()
     n = 0
@@ -431,6 +439,9 @@ def main(argv: list[str] | None = None) -> int:
     lo.add_argument("--pack", default="house")
     sub.add_parser("stop")
     sub.add_parser("check")
+    lg = sub.add_parser("log")
+    lg.add_argument("--job", required=True)
+    lg.add_argument("--bytes", default=12000)
     gr = sub.add_parser("grow")
     gr.add_argument("--gb", type=int, required=True)
     ps = sub.add_parser("publish-state")
@@ -441,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
-         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow}[a.cmd](a)
+         "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

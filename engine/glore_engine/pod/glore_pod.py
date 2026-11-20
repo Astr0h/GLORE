@@ -221,18 +221,19 @@ class Ace:
     def ensure_extra_model(self, name: str, log, status: Status) -> None:
         """One more checkpoint by name (e.g. the 4B song planner), downloaded once."""
         d = self.ckpt / name
-        if d.is_dir() and any(d.iterdir()):
+        if (d / ".glore_complete").exists():
             return
         status.update(phase="setup", message=f"Downloading {name} (first time only)")
         code, _ = run([*self.uv, "run", "--no-sync", "acestep-download", "--dir", str(self.ckpt),
-                       "--model", name, "--skip-main"], self.dir, self.env, log)
+                       "--model", name, "--skip-main", "--force"], self.dir, self.env, log)
         if code:
             raise RuntimeError(f"Downloading {name} failed (see log)")
+        (d / ".glore_complete").write_text(str(now()))
 
     def ensure_models(self, variant: str, log, status: Status) -> None:
+        # A marker, not "folder isn't empty": a download cut short (e.g. a full disk) leaves a partial folder
         need = [VARIANT_DIRS[variant], "vae"]
-        if all((self.ckpt / n / "config.json").exists() or (self.ckpt / n).is_dir() and any((self.ckpt / n).iterdir())
-               for n in need):
+        if all((self.ckpt / n / ".glore_complete").exists() for n in need):
             return
         status.update(phase="setup", message="Downloading ACE-Step model weights (first run only, ~8 GB)")
         code, _ = run([*self.uv, "run", "--no-sync", "acestep-download", "--dir", str(self.ckpt)],
@@ -240,10 +241,16 @@ class Ace:
         if code:
             raise RuntimeError("Model download failed (see log)")
         if variant != "turbo":
+            # --force: ACE skips any folder that exists, even one a full disk left half-downloaded;
+            # forced, the Hugging Face download resumes and checks what's already there
             code, _ = run([*self.uv, "run", "--no-sync", "acestep-download", "--dir", str(self.ckpt),
-                           "--model", VARIANT_DIRS[variant], "--skip-main"], self.dir, self.env, log)
+                           "--model", VARIANT_DIRS[variant], "--skip-main", "--force"], self.dir, self.env, log)
             if code:
                 raise RuntimeError(f"Downloading {VARIANT_DIRS[variant]} failed (see log)")
+        for n in need:
+            if (self.ckpt / n).is_dir():
+                (self.ckpt / n / ".glore_complete").write_text(str(now()))
+
 
     # ------------------------------------------------------------ training
     def preprocess(self, dataset_json: Path, tensor_dir: Path, variant: str, log, status: Status,

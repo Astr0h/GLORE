@@ -416,6 +416,19 @@ def process_pending_links(vol: cloud.Volume, report=print) -> list[dict]:
     return done
 
 
+def cmd_queue(a) -> dict:
+    """Jobs waiting for a pod. --drop <id> (or 'all') removes them."""
+    vol = manager().volume()
+    keys = [k for k in vol.list_keys("glore/queue/") if k.endswith(".json") and "/." not in k]
+    jobs = [json.loads(vol.get_bytes(k) or b"{}") for k in keys]
+    for k, j in zip(keys, jobs):
+        drop = a.drop in ("all", j.get("id"))
+        if drop:
+            vol.delete(k)
+        print(f"{j.get('id')}  {j.get('mode'):<8} {'dropped' if drop else 'waiting'}")
+    return {"queue": jobs}
+
+
 def cmd_library(a) -> dict:
     vol = manager().volume()
     if a.delete:
@@ -805,6 +818,8 @@ def main(argv: list[str] | None = None) -> int:
     to.add_argument("--set", action="append", help="key=value (repeat)")
     to.add_argument("--wait", action="store_true")
     to.add_argument("--timeout-min", type=float, default=40)
+    qu = sub.add_parser("queue")
+    qu.add_argument("--drop")
     lb = sub.add_parser("library")
     lb.add_argument("--delete")
     so = sub.add_parser("song")
@@ -844,7 +859,7 @@ def main(argv: list[str] | None = None) -> int:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
          "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
                 "import": cmd_import, "link": cmd_link, "library": cmd_library,
-                "tool": cmd_tool}[a.cmd](a)
+                "tool": cmd_tool, "queue": cmd_queue}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

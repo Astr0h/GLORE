@@ -33,11 +33,15 @@ ACE_REPO = "https://github.com/ace-step/ACE-Step-1.5.git"
 ACE_COMMIT = "ca1e85fe9430179831e6bc6be790c332190a3866"  # pinned: the CLI flags below match this commit
 RUNPOD_API = "https://api.runpod.io/v2"
 
-# "standard" ACE-Step 1.5 = the 2B DiT. XL would be "xl-turbo" etc.
-VARIANT_DIRS = {"turbo": "acestep-v15-turbo", "base": "acestep-v15-base", "sft": "acestep-v15-sft"}
+# "standard" ACE-Step 1.5 = the 2B DiT; xl_* = the 4B DiT (cloud only: too big for 8 GB cards)
+VARIANT_DIRS = {"turbo": "acestep-v15-turbo", "base": "acestep-v15-base", "sft": "acestep-v15-sft",
+                "xl_turbo": "acestep-v15-xl-turbo", "xl_base": "acestep-v15-xl-base", "xl_sft": "acestep-v15-xl-sft"}
 # Inference settings each variant expects; stored with the LoRA so Generate uses the right ones
 VARIANT_INFERENCE = {"turbo": {"shift": 3.0, "steps": 8}, "base": {"shift": 1.0, "steps": 50},
-                     "sft": {"shift": 1.0, "steps": 50}}
+                     "sft": {"shift": 1.0, "steps": 50}, "xl_turbo": {"shift": 3.0, "steps": 8},
+                     "xl_base": {"shift": 1.0, "steps": 50}, "xl_sft": {"shift": 1.0, "steps": 50}}
+CLOUD_LM = "acestep-5Hz-lm-4B"
+FFMPEG = ["ffmpeg"]  # the biggest song planner; the cloud GPU has room for it
 
 EPOCH_RE = re.compile(r"Epoch (\d+)/(\d+)(?:, Step (\d+))?.*?Loss: ([0-9.]+)")
 OOM_RE = re.compile(r"out of memory|OutOfMemoryError|CUBLAS_STATUS_ALLOC_FAILED", re.I)
@@ -205,6 +209,17 @@ class Ace:
 
     def venv_python(self) -> Path:
         return self.dir / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+    def ensure_extra_model(self, name: str, log, status: Status) -> None:
+        """One more checkpoint by name (e.g. the 4B song planner), downloaded once."""
+        d = self.ckpt / name
+        if d.is_dir() and any(d.iterdir()):
+            return
+        status.update(phase="setup", message=f"Downloading {name} (first time only)")
+        code, _ = run([*self.uv, "run", "--no-sync", "acestep-download", "--dir", str(self.ckpt),
+                       "--model", name, "--skip-main"], self.dir, self.env, log)
+        if code:
+            raise RuntimeError(f"Downloading {name} failed (see log)")
 
     def ensure_models(self, variant: str, log, status: Status) -> None:
         need = [VARIANT_DIRS[variant], "vae"]
@@ -433,6 +448,63 @@ def terminate_self(log) -> None:
             log.write(f"[glore] {method} failed: {e}\n")
 
 
+# ---------------------------------------------------------------- generation on the pod
+
+def run_generate_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
+    """Render takes on the cloud GPU (no PC needed). job["takes"]: [{name, caption, lora_dir?, scale?,
+    seed, duration, bpm, key, rewrite_caption?, velocity_norm?}]. MP3s land in outputs/<job id>/."""
+    variant = job.get("variant", "xl_sft")
+    ace.ensure(variant, log, status)
+    lm = job.get("lm", CLOUD_LM)
+    if lm:
+        ace.ensure_extra_model(lm, log, status)
+    inference = VARIANT_INFERENCE[variant]
+    out_dir = root / "outputs" / job["id"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    script = Path(__file__).with_name("glore_generate.py")
+    takes = job.get("takes") or []
+    results = []
+    for i, t in enumerate(takes):
+        name = re.sub(r"[^A-Za-z0-9 ._()+-]", "", t.get("name") or f"take {i + 1}").strip() or f"take {i + 1}"
+        status.update(phase="generating", progress=0.1 + 0.85 * i / max(1, len(takes)),
+                      message=f"Rendering {name} ({i + 1}/{len(takes)})")
+        work = root / "glore" / "runs" / job["id"] / f"take{i + 1}"
+        work.mkdir(parents=True, exist_ok=True)
+        lora = None
+        if t.get("lora_dir"):
+            lora = {"path": str(root / t["lora_dir"]), "trigger": t.get("trigger"), "scale": float(t.get("scale", 1.0))}
+        gjob = {"ace_dir": str(ace.dir), "out_dir": str(work), "variant": variant, "caption": t.get("caption", ""),
+                "lora": lora, "bpm": t.get("bpm"), "key": t.get("key"), "duration": float(t.get("duration", 30)),
+                "seed": int(t.get("seed", -1)), "count": 1, "steps": inference["steps"], "shift": inference["shift"],
+                "offload": False, "lm": lm, "rewrite_caption": bool(t.get("rewrite_caption", True)),
+                "velocity_norm": float(t.get("velocity_norm", 0.0))}
+        (work / "job.json").write_text(json.dumps(gjob, indent=2), encoding="utf-8")
+        found = {}
+
+        def on_line(line, found=found):
+            if line.startswith("GLORE_RESULT "):
+                found.update(json.loads(line[len("GLORE_RESULT "):]))
+            elif line.startswith("GLORE_ERROR "):
+                found["error"] = json.loads(line[len("GLORE_ERROR "):]).get("error")
+
+        code, _ = run(ace.py(str(script), str(work / "job.json")), ace.dir, ace.env, log, on_line=on_line)
+        files = found.get("files") or []
+        if code or not files:
+            results.append({"name": name, "error": found.get("error") or "generation failed (see log)"})
+            continue
+        mp3 = out_dir / f"{name}.mp3"
+        code, _ = run([*FFMPEG, "-y", "-v", "error", "-i", files[0]["path"], "-c:a", "libmp3lame", "-b:a", "256k",
+                       str(mp3)], ace.dir, ace.env, log)
+        if code or not mp3.exists():
+            raise RuntimeError("Converting the take to MP3 failed (see log)")
+        results.append({"name": name, "mp3": f"outputs/{job['id']}/{mp3.name}", "seed": files[0].get("seed"),
+                        "planned_caption": found.get("planned_caption"), "seconds": found.get("seconds")})
+        shutil.rmtree(work, ignore_errors=True)
+    if takes and not any("mp3" in r for r in results):
+        raise RuntimeError(results[0].get("error") if results else "nothing rendered")
+    return {"takes": results, "variant": variant, "lm": lm}
+
+
 def next_job(queue: Path) -> Path | None:
     jobs = sorted(queue.glob("*.json"), key=lambda p: p.stat().st_mtime)
     return jobs[0] if jobs else None
@@ -503,6 +575,8 @@ def process_job(path: Path, root: Path, ace: Ace, state: dict) -> dict | None:
         try:
             if job["mode"] == "test":
                 result = run_test_job(job, root)
+            elif job["mode"] == "generate":
+                result = run_generate_job(job, root, ace, log, status)
             else:
                 result = run_train_job(job, root, ace, log, status, lambda: state.get("stop"))
             status.update(phase="done", progress=1.0, message="Done", result=result)

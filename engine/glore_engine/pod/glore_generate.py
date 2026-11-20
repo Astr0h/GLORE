@@ -47,7 +47,7 @@ def main(job_path: str) -> int:
     t0 = time.time()
     msg, ok = dit.initialize_service(
         project_root=ace_dir,
-        config_path=f"acestep-v15-{variant}",
+        config_path=f"acestep-v15-{variant.replace('_', '-')}",  # xl_sft -> acestep-v15-xl-sft
         device="cuda" if torch.cuda.is_available() else "cpu",
         use_flash_attention=False,
         compile_model=False,
@@ -68,7 +68,7 @@ def main(job_path: str) -> int:
         llm = LLMHandler()
         lm_msg, lm_ok = llm.initialize(checkpoint_dir=os.path.join(ace_dir, "checkpoints"), lm_model_path=lm_name,
                                        backend="pt", device="cuda" if torch.cuda.is_available() else "cpu",
-                                       offload_to_cpu=True)
+                                       offload_to_cpu=bool(job.get("offload", True)))
         if not lm_ok:
             raise RuntimeError(f"Song planner didn't load: {lm_msg}")
 

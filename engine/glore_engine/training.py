@@ -154,7 +154,7 @@ def upload_bundle(vol: cloud.Volume, b: Bundle, report: Report) -> dict:
 
 
 def sync_scripts(vol: cloud.Volume) -> None:
-    for name in ("glore_pod.py", "glore_label.py", "pod_start.sh"):
+    for name in ("glore_pod.py", "glore_label.py", "glore_generate.py", "pod_start.sh"):
         data = (POD_DIR / name).read_bytes().replace(b"\r\n", b"\n")
         vol.put_bytes(f"glore/{name}", data)
 

@@ -92,8 +92,8 @@ def save_settings(patch: dict) -> dict:
         data[k] = v
     if data["datacenter"] and data["datacenter"] not in S3_DATACENTERS:
         raise CloudError(f"{data['datacenter']} doesn't support RunPod's S3 API. Use one of: {', '.join(S3_DATACENTERS)}")
-    if data["variant"] not in ("turbo", "base", "sft"):
-        raise CloudError("variant must be turbo, base or sft")
+    if data["variant"] not in ("turbo", "base", "sft", "xl_turbo", "xl_base", "xl_sft"):
+        raise CloudError("variant must be turbo, base, sft or an xl_ one (cloud only)")
     (home() / "settings.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data
 

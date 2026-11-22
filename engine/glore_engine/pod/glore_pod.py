@@ -544,7 +544,7 @@ def run_generate_job(job: dict, root: Path, ace: Ace, log, status: Status) -> di
 
 # ---------------------------------------------------------------- songs: your vocal + a beat built around it
 
-SONG_EXTRAS = ("demucs==4.0.1", "librosa>=0.10.2", "pedalboard>=0.9.8", "soundfile>=0.12")
+SONG_EXTRAS = ("demucs==4.0.1", "librosa>=0.10.2", "pedalboard>=0.9.8", "soundfile>=0.12", "matchering>=2.0.6")
 CLEAN_EXTRAS = ("audio-separator[gpu]>=0.30",)
 
 
@@ -613,12 +613,20 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
                               "work": str(work / "prep")}), encoding="utf-8")
     a = _run_tool(ace, "glore_song.py", ["prep", str(pj)], log)
     bpm, key = job.get("bpm") or a["bpm"], job.get("key") or a["key"]
+    hint, plan = "", None
+    if job.get("structure", True):  # give the beat real sections: intro, drops, outro around the vocal
+        status.update(progress=0.1, message="Planning the arrangement: intro, drops, outro")
+        style = job.get("chops") or "house"
+        r = _tool(ace, "arrange", root, work / "arrange", log, params={
+            "vocal": a["vocal"], "music": a.get("music"), "bpm": bpm, "style": style})
+        a = {**a, "vocal": r["vocal"], "music": r.get("music"), "duration": r["duration"]}
+        hint, plan = r.get("hint", ""), r.get("plan")
     inference = VARIANT_INFERENCE[variant]
     out_dir = root / "outputs" / job["id"]
     out_dir.mkdir(parents=True, exist_ok=True)
     takes, results = job.get("takes") or [], []
     mixp = {k: job[k] for k in ("fx", "reverb", "delay", "chops", "chops_density", "vocal_db", "beat_db", "chops_db",
-                                 "stems") if job.get(k) is not None}
+                                 "stems", "master", "ai_vox_db", "pack") if job.get(k) is not None}
     for i, t in enumerate(takes):
         name = re.sub(r"[^A-Za-z0-9 ._()+-]", "", t.get("name") or f"take {i + 1}").strip() or f"take {i + 1}"
         status.update(phase="generating", progress=0.15 + 0.8 * i / max(1, len(takes)),
@@ -627,7 +635,8 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
         tw.mkdir(parents=True, exist_ok=True)
         lora = ({"path": str(root / t["lora_dir"]), "trigger": t.get("trigger"), "scale": float(t.get("scale", 1.0))}
                 if t.get("lora_dir") else None)
-        gjob = {"ace_dir": str(ace.dir), "out_dir": str(tw), "variant": variant, "caption": t.get("caption", ""),
+        caption = ", ".join(x for x in (t.get("caption", ""), hint) if x)
+        gjob = {"ace_dir": str(ace.dir), "out_dir": str(tw), "variant": variant, "caption": caption,
                 "lora": lora, "bpm": bpm, "key": key, "duration": a["duration"], "seed": int(t.get("seed", -1)),
                 "count": 1, "steps": inference["steps"], "shift": inference["shift"], "offload": False, "lm": None,
                 "mode": "complete", "src_audio": a["vocal"], "tracks": t.get("tracks") or ["drums", "bass", "keyboard", "synth"],
@@ -641,6 +650,7 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
                 "chops_seed": int(t.get("seed", 0)), "out_base": str(out_dir / name)})
             rel = lambda f: str(Path(f).relative_to(root)).replace("\\", "/")
             results.append({"name": name, "mp3": rel(m["mp3"]), "beat_mp3": rel(m["beat_mp3"]), "chops": m.get("chops"),
+                            "mastered_to": m.get("mastered_to"),
                             "zip": rel(m["zip"]) if m.get("zip") else None,
                             "seed": g["files"][0].get("seed"), "caption": t.get("caption")})
         except RuntimeError as e:
@@ -649,7 +659,7 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
     if takes and not any("mp3" in r for r in results):
         raise RuntimeError(results[0].get("error") or "nothing rendered")
     return {"takes": results, "variant": variant, "bpm": bpm, "key": key, "duration": a["duration"],
-            "gh_run": job.get("gh_run"),
+            "gh_run": job.get("gh_run"), "sections": (plan or {}).get("sections"),
             "kind": job.get("kind", "vocal")}
 
 

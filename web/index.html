@@ -229,7 +229,13 @@ nav button { max-width: 120px; padding: 8px 2px; }
         <div><label>Chop amount <span class="val" id="chopDenVal">1.0×</span></label><input type="range" id="chopDen" min="0.4" max="2" step="0.1" value="1"></div>
         <div><label>Vocal level <span class="val" id="vocDbVal">0 dB</span></label><input type="range" id="vocDb" min="-6" max="6" step="0.5" value="0"></div>
       </div>
-      <div class="hint">Every take comes with the full song, the beat on its own, and a stems ZIP (vocal, drums, bass, music, chops) for Ableton.</div>
+      <div class="toggle"><span>Arrange it like a record<br><span class="faint" style="font-size:12px">adds an intro, drops after the chorus and an outro</span></span><input type="checkbox" id="structure" checked></div>
+      <label>AI vocal textures <span class="val" id="aiVoxVal">-9 dB</span></label>
+      <input type="range" id="aiVox" min="-25" max="0" step="1" value="-9">
+      <div class="hint" style="margin-top:4px">The model's own chops and ad-libs, kept low and only in the gaps of your vocal. All the way left = off.</div>
+      <label>Master like</label>
+      <select id="masterRef"></select>
+      <div class="hint">Every take comes with the full song, the beat on its own, and a stems ZIP (vocal, drums, bass, music, chops, AI textures) for Ableton.</div>
       <button class="btn wide" id="songBtn">Build the song</button>
       <div class="hint" id="songHint">Your file is encrypted on this device before upload. The beat is written while the model hears your vocal; then your real vocal goes on top. About 10–20 minutes.</div>
       <div class="bar" id="upBar" style="display:none"><i style="width:0%"></i></div>
@@ -499,6 +505,8 @@ function renderTakes() {
   $("#takesList").innerHTML = jobs.map((j) => {
     const when = new Date((j.started || 0) * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
     const tag = j.mode === "song" ? `Song${j.bpm ? ` · ${Math.round(j.bpm)} BPM` : ""}${j.key ? ` · ${esc(j.key)}` : ""} · ` : "";
+    const arr = j.sections && j.sections.length ? `<div class="faint" style="font-size:12px;margin:-2px 0 8px">${
+      j.sections.map((x) => x.part === "vocal" ? "vocal" : `<span style="color:var(--accent)">${esc(x.part)}</span>`).join(" → ")}</div>` : "";
     const head = `<div class="take-top"><span class="dim mono">${tag}${when}</span><span class="spacer"></span>${statusBadge(j.phase)}</div>`;
     if (j.phase !== "done") return `<div class="card">${head}<div class="cap" style="margin-top:8px">${esc(j.message || "")}</div></div>`;
     const takes = (j.takes || []).map((t) => t.mp3 ? `<div class="take">
@@ -508,10 +516,11 @@ function renderTakes() {
           ${t.beat_media ? `<span data-media="${esc(t.beat_media)}" style="display:contents">${dl(t.beat_media, t.name + " (beat).mp3", "Beat only")}</span>` : ""}
           ${t.zip_media ? dl(t.zip_media, t.name + " (stems).zip", "Stems ZIP (WAV)")
             : t.zip && j.gh_run ? `<a class="ghost btnlink" style="text-decoration:none;color:var(--text)" href="https://github.com/${esc(cfg.repo)}/actions/runs/${esc(j.gh_run)}" target="_blank" rel="noopener">Stems ZIP on GitHub ↗</a>` : ""}</div>
+        ${t.mastered_to ? `<div class="faint" style="font-size:12px">Mastered like ${esc(t.mastered_to)}</div>` : ""}
         ${t.planned_caption ? `<div class="cap">${esc(t.planned_caption)}</div>` : ""}</div>`
       : `<div class="take"><b>${esc(t.name)}</b><div class="cap" style="color:var(--danger)">${esc(t.error || "failed")}</div></div>`).join("");
-    return `<div class="card">${head}<div style="margin-top:12px">${takes}</div></div>`;
-  }).join("") + `<div class="hint" style="text-align:center">Play links last 7 days. Download anything you want to keep.</div>`;
+    return `<div class="card">${head}<div style="margin-top:12px">${arr}${takes}</div></div>`;
+  }).join("") + `<div class="hint" style="text-align:center">Audio stays here while it's among your recent takes. Save anything you want to keep.</div>`;
 }
 function renderTrain() {
   const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "train");
@@ -620,6 +629,9 @@ async function buildSong() {
     } else args += ` --item ${item.id}`;
     args += ` --fx ${songFx} --reverb ${$("#reverb").value} --delay ${$("#delay").value} --vocal-db ${$("#vocDb").value}`;
     if (songChops) args += ` --chops ${songChops} --chops-density ${$("#chopDen").value}`;
+    args += ` --master ${$("#masterRef").value || "pack"} --ai-vox ${Number($("#aiVox").value) <= -25 ? "off" : $("#aiVox").value}`;
+    if (!$("#structure").checked) args += " --no-structure";
+    store.set("structure", $("#structure").checked); store.set("masterRef", $("#masterRef").value);
     if ($("#songBpm").value) args += ` --bpm ${Number($("#songBpm").value)}`;
     if ($("#songKey").value) args += ` --key ${$("#songKey").value.replace(" ", "_")}`;
     progress(0.95, "Starting the cloud job…");
@@ -687,6 +699,11 @@ function renderLibrary() {
   sel.innerHTML = usable.length ? usable.map((i) => `<option value="${esc(i.id)}">${esc(i.name)} · ${esc(KIND_LABEL[i.kind] || i.kind)}${i.bpm ? ` · ${Math.round(i.bpm)} BPM` : ""}</option>`).join("")
     : `<option value="">Nothing in your library yet</option>`;
   if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  const mr = $("#masterRef"), mkeep = mr.value || store.get("masterRef", "pack");
+  mr.innerHTML = `<option value="pack">Your pack's sound (Fred training tracks)</option>` +
+    lib().filter((i) => ["song", "beat"].includes(i.kind)).map((i) => `<option value="${esc(i.id)}">${esc(i.name)}</option>`).join("") +
+    `<option value="none">Off: GLORE's basic master</option>`;
+  if ([...mr.options].some((o) => o.value === mkeep)) mr.value = mkeep;
   // working + pending
   const jobs = ((state && state.jobs) || []).filter((j) => j.mode === "tool" && !["done", "error", "stopped"].includes(j.phase));
   const fresh = Object.entries(recentTools).filter(([, t]) => Date.now() - t.at < 25 * 60e3 && !(state && state.updated * 1000 > t.at + 60e3));
@@ -862,6 +879,8 @@ function initLibrary() {
     const upd = () => { $("#" + id + "Val").textContent = fmt(Number(r.value)); store.set(id, r.value); }; r.oninput = upd; upd(); };
   slide("reverb", (v) => Math.round(v * 100)); slide("delay", (v) => Math.round(v * 100));
   slide("chopDen", (v) => v.toFixed(1) + "×"); slide("vocDb", (v) => (v > 0 ? "+" : "") + v + " dB");
+  slide("aiVox", (v) => v <= -25 ? "off" : v + " dB");
+  $("#structure").checked = store.get("structure", "true") !== "false";
 }
 
 // ------------------------------------------------------------- boot

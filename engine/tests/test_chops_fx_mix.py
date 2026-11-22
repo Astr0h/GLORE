@@ -191,3 +191,94 @@ def test_tools_analyse_lock_and_chop_for_real(tmp_path):
     assert ch["kind"] == "chops" and ch["hits"] > 0 and (root / ch["file"]).exists()
     err = run_tool(tmp_path, "lock", {**item, "bpm": None}, {"target_bpm": 140})
     assert "Analyse it first" in err["error"]
+
+
+# ------------------------------------------------- structure, reference mastering, AI textures
+
+from glore_engine import structure
+
+
+def load_song():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("song_fixture", SONG)
+    s = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(s)
+    return s
+
+
+def test_structure_adds_intro_drops_and_outro_on_the_bar_grid():
+    s = load_song()
+    v = np.stack([s.voc, s.voc])
+    n_bars = int(np.ceil(len(s.voc) / s.SR / s.BAR))
+    act = chops.vocal_activity(s.voc, s.SR, s.BPM, 0, n_bars)
+    regions, _ = chops.find_chorus(chops._mono(v, s.SR), s.BPM, 0, n_bars, act)
+    plan = structure.plan_structure(v, s.SR, s.BPM, 0.0, regions, "house")
+    kinds = [i.kind for i in plan.inserts]
+    assert kinds[0] == "intro" and kinds[-1] == "outro" and kinds.count("drop") == 2
+    bar = plan.bar_samples
+    assert all(i.at % bar == 0 and i.bars in (8,) for i in plan.inserts)  # whole bars, on bar lines
+    arranged = structure.apply_plan(v, plan)
+    assert arranged.shape[1] == v.shape[1] + sum(i.bars for i in plan.inserts) * bar
+    # the vocal is all still there, in order, nothing cut
+    assert np.allclose(np.abs(arranged).sum(), np.abs(v).sum(), rtol=1e-6)
+    assert np.allclose(arranged[:, 8 * bar:8 * bar + 1000], v[:, :1000])
+    secs = [x["part"] for x in plan.sections]
+    assert secs == ["intro", "vocal", "drop", "vocal", "drop", "vocal", "outro"]
+    assert "drops" in structure.caption_hint(plan)
+
+
+def test_structure_keeps_an_existing_intro_and_stays_under_the_length_cap():
+    s = load_song()
+    pad = np.zeros(int(8 * s.BAR * s.SR), np.float32)
+    v1 = np.concatenate([pad, s.voc])
+    v = np.stack([v1, v1])
+    plan = structure.plan_structure(v, s.SR, s.BPM, 0.0, [], "house")
+    assert "intro" not in [i.kind for i in plan.inserts]
+    long = structure.plan_structure(v, s.SR, s.BPM, 0.0, [(4, 8), (12, 16)], "house", max_seconds=v1.size / s.SR + 20)
+    assert v1.size / s.SR + sum(i.bars for i in long.inserts) * long.bar_samples / s.SR <= v1.size / s.SR + 20
+
+
+def test_arrange_tool_for_real(tmp_path):
+    s = load_song()
+    sf.write(tmp_path / "v.wav", np.stack([s.voc, s.voc]).T, s.SR)
+    res = run_tool(tmp_path, "arrange", {}, {"vocal": str(tmp_path / "v.wav"), "bpm": s.BPM, "style": "house"})
+    out, _ = sf.read(res["vocal"])
+    assert abs(out.shape[0] / s.SR - res["duration"]) < 0.05 and res["duration"] > len(s.voc) / s.SR + 30
+    assert res["plan"]["sections"][0]["part"] == "intro" and "intro" in res["hint"]
+
+
+def test_reference_master_matches_the_reference(tmp_path):
+    pytest.importorskip("matchering")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("glore_tools", TOOLS)
+    gt = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(Path(__file__).parents[1]))
+    spec.loader.exec_module(gt)
+    root = tmp_path / "vol"
+    ds = root / "datasets" / "house"
+    ds.mkdir(parents=True)
+    rng = np.random.default_rng(1)
+    t = np.arange(SR * 40) / SR
+    for i in range(3):  # loud, bright "training tracks"
+        x = 0.35 * np.sin(2 * np.pi * (100 + 30 * i) * t) * np.sign(np.sin(2 * np.pi * 2 * t)) + 0.08 * rng.standard_normal(len(t))
+        sf.write(ds / f"t{i}_full.flac", np.stack([x, x], 1).clip(-1, 1), SR)
+    quiet = (0.05 * np.sin(2 * np.pi * 110 * t)).astype(np.float32)
+    song = np.stack([quiet, quiet])
+    out, label = gt.master_to_reference(song, root, tmp_path, "pack", "house")
+    assert label == "house pack" and (root / "references" / "house.wav").exists()
+    rms = lambda x: 20 * np.log10(np.sqrt(np.mean(x ** 2)))
+    ref, _ = sf.read(root / "references" / "house.wav")
+    assert abs(rms(out) - rms(ref)) < 1.5 and rms(out) > rms(song) + 10
+    # no reference audio: GLORE's own master, never a crash
+    out2, label2 = gt.master_to_reference(song, tmp_path / "empty", tmp_path, "pack", "rnb")
+    assert label2 is None and np.isfinite(out2).all()
+
+
+def test_ai_textures_only_fill_the_gaps():
+    v = vocal_then_break()
+    noise = (np.random.default_rng(0).standard_normal(v.shape) * 0.2).astype(np.float32)
+    tex = mixing.ai_textures(noise, v, SR, level_db=-9)
+    bar = int(4 * BEAT * SR)
+    sung = np.mean([np.abs(tex[:, b * bar + int(0.5 * BEAT * SR):b * bar + int(2.7 * BEAT * SR)]).mean() for b in range(4)])
+    gap = np.abs(tex[:, 5 * bar:7 * bar]).mean()
+    assert gap > 5 * sung

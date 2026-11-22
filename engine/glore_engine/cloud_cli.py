@@ -158,7 +158,8 @@ def _start_or_reuse_inner(mgr: CloudManager, kind: str, hard_cap_s: float, idle_
             time.sleep(60)
 
 
-ENGINE_MODULES = ("__init__", "audio_io", "analysis", "separation", "cleanup", "vocal_lock", "chops", "fx", "mixing")  # synced to the pod
+ENGINE_MODULES = ("__init__", "audio_io", "analysis", "separation", "cleanup", "vocal_lock", "chops", "fx", "mixing",
+                  "structure")  # synced to the pod
 
 
 def sync_scripts(vol: cloud.Volume) -> None:
@@ -585,6 +586,9 @@ def cmd_song(a) -> dict:
            **({"item": item_id} if item_id else {"upload": a.source}),
            "fx": a.fx, "reverb": a.reverb, "delay": a.delay, "chops": a.chops or None,
            "chops_density": a.chops_density, "vocal_db": a.vocal_db, "beat_db": a.beat_db, "chops_db": a.chops_db,
+           "structure": not a.no_structure, "master": a.master,
+           "ai_vox_db": None if a.ai_vox in ("off", "", None) else float(a.ai_vox),
+           "pack": (takes[0].get("pack") if takes else None) or "house",
            "bpm": a.bpm, "key": (a.key or "").replace("_", " ") or None, "takes": takes}
     vol.put_bytes(f"glore/queue/{job_id}.json", json.dumps(job).encode())
     row = _start_or_reuse(mgr, "train", a.hard_cap_hours * 3600, 10, {"job": job_id}, gpus=work_gpus())
@@ -1039,6 +1043,9 @@ def main(argv: list[str] | None = None) -> int:
     so.add_argument("--vocal-db", type=float, default=0.0)
     so.add_argument("--beat-db", type=float, default=0.0)
     so.add_argument("--chops-db", type=float, default=0.0)
+    so.add_argument("--master", default="pack", help="pack (the pack's own sound) | none | a library item id")
+    so.add_argument("--ai-vox", default="-9", help="level in dB of the model's own vocal textures, or off")
+    so.add_argument("--no-structure", action="store_true", help="don't add an intro / drops / outro")
     so.add_argument("--name", default="")
     so.add_argument("--kind", default="vocal", help="vocal (a cappella) or song (vocal gets separated out)")
     so.add_argument("--takes", required=True)

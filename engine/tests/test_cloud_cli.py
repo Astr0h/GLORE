@@ -217,7 +217,11 @@ def add(name, kind):
     open(os.path.join(d, "a.flac"), "wb").write(b"flac")
     it = {"id": i, "name": name, "kind": kind, "file": f"library/{i}/a.flac", "created": time.time(), "parent": item.get("id")}
     open(os.path.join(d, "item.json"), "w").write(json.dumps(it)); return it
-if op == "mixsong":
+if op == "arrange":
+    print("GLORE_RESULT " + json.dumps({"vocal": p["vocal"], "music": p.get("music"), "duration": 28.5,
+          "hint": "arranged like a finished record, with big instrumental drops after the chorus",
+          "plan": {"sections": [{"part": "intro", "start": 0, "end": 16}, {"part": "vocal", "start": 16, "end": 28.5}]}}))
+elif op == "mixsong":
     b = p["out_base"]
     for f in (b + ".mp3", b + " (beat).mp3", b + " (stems).zip"):
         open(f, "wb").write(b"x")
@@ -292,6 +296,11 @@ def test_song_from_an_encrypted_upload(cli, tmp_path, monkeypatch):
     # the mix got the options from the web app, the vocal, BPM and key
     mixed = json.loads((tmp_path / "volume" / "seen-mixsong.json").read_text())["params"]
     assert mixed["fx"] == "club" and mixed["chops"] == "house" and mixed["bpm"] == 128.0 and mixed["key"] == "F minor"
+    assert mixed["master"] == "pack" and mixed["ai_vox_db"] == -9.0 and mixed["pack"] == "house"
+    # the arrangement was planned, its sections reach the app, and the beat was asked for them
+    arranged = json.loads((tmp_path / "volume" / "seen-arrange.json").read_text())["params"]
+    assert arranged["style"] == "house" and arranged["bpm"] == 128.0
+    assert res["sections"][0]["part"] == "intro" and res["duration"] == 28.5
     # a second song can reuse the library item without uploading again
     rc = cloud_cli.main(["song", "--item", items[0]["id"], "--takes", str(tf), "--wait", "--out", str(tmp_path / "o2"),
                          "--timeout-min", "1"])

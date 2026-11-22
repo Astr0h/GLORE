@@ -62,7 +62,8 @@ def _fit(parts: dict[str, np.ndarray], n: int) -> dict[str, np.ndarray]:
 
 def mix_song(music: dict[str, np.ndarray], vocal: np.ndarray, sr: int, bpm: float,
              chops: np.ndarray | None = None, vocal_db: float = 0.0, beat_db: float = 0.0, chops_db: float = 0.0,
-             sidechain_db: float = 5.0, pocket_db: float = 3.5) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+             sidechain_db: float = 5.0, pocket_db: float = 3.5, finish: bool = True
+             ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     n = max([v.shape[1] for v in music.values()] + [vocal.shape[1]])
     music = _fit(music, n)
     vocal = _fit({"v": vocal}, n)["v"]
@@ -81,5 +82,20 @@ def mix_song(music: dict[str, np.ndarray], vocal: np.ndarray, sr: int, bpm: floa
         c = _fit({"c": chops}, n)["c"] * g(chops_db)
         out["chops"] = sidechain(c, kick, sidechain_db * 0.5) if kick is not None else c
     out["vocal"] = vocal * g(vocal_db)
-    song = master(sum(out.values()), sr)
-    return song, out
+    mixed = sum(out.values())
+    if not finish:  # the caller masters it (e.g. to a reference track); leave headroom
+        peak = float(np.max(np.abs(mixed))) or 1.0
+        return (mixed * (10 ** (-3 / 20) / peak)).astype(np.float32), out
+    return master(mixed, sr), out
+
+
+def ai_textures(x: np.ndarray, vocal: np.ndarray, sr: int, level_db: float = -9.0) -> np.ndarray:
+    """The model's own vocal-ish layer (its chops and ad-libs), kept as texture: thinned out, set back,
+    and only where the real vocal is quiet - so it fills the gaps instead of singing over you."""
+    from .chops import vocal_gap_gain
+    y = pb.Pedalboard([pb.HighpassFilter(250), pb.LowpassFilter(8500), pb.Reverb(room_size=0.5, wet_level=0.18,
+                                                                                    dry_level=0.9)])(x, sr)
+    m = vocal.mean(0)
+    n = y.shape[1]
+    m = m[:n] if len(m) >= n else np.pad(m, (0, n - len(m)))
+    return (y * vocal_gap_gain(m, sr, 0.95, release=0.35) * 10 ** (level_db / 20)).astype(np.float32)

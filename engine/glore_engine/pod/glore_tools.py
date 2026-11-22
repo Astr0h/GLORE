@@ -161,6 +161,80 @@ def beat_offset(beat, bpm: float) -> float:
     return float(beats[0] % (60.0 / bpm)) if len(beats) else 0.0
 
 
+def op_arrange(job, root, work, item, p):
+    """p: vocal, music?, bpm, style. Plans intro / drops / outro around the vocal and opens that space
+    in its timeline (and the original music's, so the two stay aligned)."""
+    import numpy as np
+    from glore_engine import chops, structure
+    bpm = float(p["bpm"])
+    dry = load(to_wav(p["vocal"], work / "vocal.wav"))
+    music = load(to_wav(p["music"], work / "music.wav")) if p.get("music") else None
+    grid_src = music if music is not None else dry
+    offset = beat_offset(grid_src, bpm)
+    bar_s = 4 * 60.0 / bpm
+    n_bars = int(np.ceil((dry.shape[1] / SR - offset) / bar_s))
+    act = chops.vocal_activity(dry.mean(0), SR, bpm, offset, n_bars)
+    struct = chops._mono(dry if music is None else dry[:, :music.shape[1]] + music[:, :dry.shape[1]], SR)
+    regions, _ = chops.find_chorus(struct, bpm, offset, n_bars, act)
+    plan = structure.plan_structure(dry, SR, bpm, offset, regions, p.get("style", "house"))
+    out = {"vocal": str(save(work / "vocal_arranged.wav", structure.apply_plan(dry, plan))),
+           "plan": plan.to_dict(), "hint": structure.caption_hint(plan), "chorus": regions, "offset": offset}
+    if music is not None:
+        out["music"] = str(save(work / "music_arranged.wav", structure.apply_plan(music, plan)))
+    out["duration"] = round(dry.shape[1] / SR + sum(i.bars for i in plan.inserts) * bar_s, 2)
+    return out
+
+
+def pack_reference(root: Path, pack: str) -> Path | None:
+    """A mastering reference that sounds like the pack: the loudest 30 s of 8 of its training tracks,
+    stitched together (built once, kept on the volume)."""
+    import numpy as np
+    ref = root / "references" / f"{pack}.wav"
+    if ref.exists():
+        return ref
+    tracks = sorted((root / "datasets" / pack).glob("*_full.flac")) or sorted((root / "datasets" / pack).glob("*.flac"))
+    if not tracks:
+        return None
+    pick = [tracks[int(i)] for i in np.linspace(0, len(tracks) - 1, min(8, len(tracks)))]
+    pieces = []
+    for t in pick:
+        x = load(t)
+        sec = SR
+        frames = x.shape[1] // sec
+        if frames < 30:
+            pieces.append(x)
+            continue
+        e = np.array([np.mean(x[:, i * sec:(i + 1) * sec] ** 2) for i in range(frames)])
+        win = np.convolve(e, np.ones(30), mode="valid")
+        s = int(np.argmax(win)) * sec
+        pieces.append(x[:, s:s + 30 * sec])
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    save(ref, np.concatenate(pieces, 1), "PCM_16")
+    return ref
+
+
+def master_to_reference(song, root: Path, work: Path, master: str, pack: str):
+    """Match the song's loudness, tone and width to a reference (Matchering). Falls back to GLORE's own master."""
+    from glore_engine.mixing import master as basic_master
+    try:
+        import matchering as mg
+        if master == "pack":
+            ref, label = pack_reference(root, pack), f"{pack} pack"
+        else:
+            f = root / "library" / master / "item.json"
+            it = json.loads(f.read_text(encoding="utf-8"))
+            ref, label = to_wav(root / it["file"], work / "reference.wav"), it["name"]
+        if ref is None:
+            raise FileNotFoundError("no reference audio")
+        tgt = save(work / "premaster.wav", song, "FLOAT")
+        out = work / "mastered.wav"
+        mg.process(target=str(tgt), reference=str(ref), results=[mg.pcm24(str(out))])
+        return load(out), label
+    except Exception as e:
+        print(f"reference master failed ({e}); using GLORE's own", flush=True)
+        return basic_master(song, SR), None
+
+
 def op_mixsong(job, root, work, item, p):
     """p: take, vocal, bpm, key, fx, reverb, delay, chops (style or ''), chops_seed, vocal_db, beat_db,
     chops_db, out_base (path without extension), stems (bool)."""
@@ -171,9 +245,12 @@ def op_mixsong(job, root, work, item, p):
     from glore_engine.mixing import mix_song
     bpm = float(p["bpm"])
     take = to_wav(p["take"], work / "take.wav")
-    parts = separate(take, work / "take_stems", model_name="htdemucs")  # the model sings its own vocal: drop it
+    parts = separate(take, work / "take_stems", model_name="htdemucs")  # the model sings its own vocal too
     music = {k: load(v) for k, v in parts.items() if k != "vocals"}
     dry = load(to_wav(p["vocal"], work / "vocal.wav"))
+    if p.get("ai_vox_db") is not None and "vocals" in parts:  # ...keep its chops / ad-libs as texture, in the gaps
+        from glore_engine.mixing import ai_textures
+        music["ai_vox"] = ai_textures(load(parts["vocals"]), dry, SR, float(p["ai_vox_db"]))
     wet = vocal_fx(dry, SR, p.get("fx", "clean"), bpm, float(p.get("reverb", 0.5)), float(p.get("delay", 0.5)))
     chops, chop_info = None, None
     if p.get("chops"):
@@ -187,16 +264,21 @@ def op_mixsong(job, root, work, item, p):
                                  density=float(p.get("chops_density", 1)), offset=beat_offset(beat_mix, bpm),
                                  harmony=beat_mix, structure=structure)
         chop_info = {"chorus": info.chorus, "hook": info.hook, "chords": info.chords[:16], "hits": info.hits}
+    master = p.get("master", "pack")   # "pack" | a library item id | "none"
     song, out = mix_song(music, wet, SR, bpm, chops=chops, vocal_db=float(p.get("vocal_db", 0)),
-                         beat_db=float(p.get("beat_db", 0)), chops_db=float(p.get("chops_db", 0)))
+                         beat_db=float(p.get("beat_db", 0)), chops_db=float(p.get("chops_db", 0)),
+                         finish=master in ("none", None))
+    mastered_to = None
+    if master not in ("none", None):
+        song, mastered_to = master_to_reference(song, root, work, master, p.get("pack", "house"))
     base = Path(p["out_base"])
     base.parent.mkdir(parents=True, exist_ok=True)
     wav = save(work / "song.wav", song, "PCM_24")
     ffmpeg("-i", str(wav), "-c:a", "libmp3lame", "-b:a", "320k", f"{base}.mp3")
-    beat = sum(v for k, v in out.items() if k not in ("vocal",))
+    beat = sum(v for k, v in out.items() if k not in ("vocal", "ai_vox"))
     beat = beat * (0.89 / max(1e-6, float(np.max(np.abs(beat)))))
     ffmpeg("-i", str(save(work / "beat.wav", beat)), "-c:a", "libmp3lame", "-b:a", "320k", f"{base} (beat).mp3")
-    res = {"mp3": f"{base}.mp3", "beat_mp3": f"{base} (beat).mp3", "chops": chop_info}
+    res = {"mp3": f"{base}.mp3", "beat_mp3": f"{base} (beat).mp3", "chops": chop_info, "mastered_to": mastered_to}
     if p.get("stems", True):
         z = Path(f"{base} (stems).zip")
         with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:
@@ -208,7 +290,7 @@ def op_mixsong(job, root, work, item, p):
     return res
 
 
-OPS = {"stems": op_stems, "clean": op_clean, "analyse": op_analyse, "lock": op_lock, "chops": op_chops,
+OPS = {"arrange": op_arrange, "stems": op_stems, "clean": op_clean, "analyse": op_analyse, "lock": op_lock, "chops": op_chops,
        "mixsong": op_mixsong}
 
 

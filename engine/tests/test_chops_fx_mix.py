@@ -42,15 +42,29 @@ def drums(n):
     return np.stack([k, k]).astype(np.float32)
 
 
+SONG = Path(__file__).with_name("song_fixture.py")
+
+
+def load_song():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("song_fixture", SONG)
+    s = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(s)
+    return s
+
+
 @pytest.mark.parametrize("style", ["house", "rnb", "gospel"])
 def test_chops_render_in_every_style(style):
-    v = vocal_then_break()
-    layer, info = chops.make_chops(v, SR, BPM, "A minor", style=style, seed=1)
+    s = load_song()
+    brk = np.zeros(int(8 * s.BAR * s.SR), np.float32)
+    v1 = np.concatenate([s.voc, brk])          # the song, then an 8-bar instrumental break for the riff
+    v = np.stack([v1, v1])
+    layer, info = chops.make_chops(v, s.SR, s.BPM, "A minor", style=style, seed=1)
     assert layer.shape == v.shape and np.isfinite(layer).all()
-    assert info.hits > 0 and 0 < float(np.abs(layer).max()) < 1
-    again, _ = chops.make_chops(v, SR, BPM, "A minor", style=style, seed=1)
+    assert info.hits > 0 and 0 < float(np.abs(layer).max()) < 1 and info.in_song == 1.0
+    again, _ = chops.make_chops(v, s.SR, s.BPM, "A minor", style=style, seed=1)
     assert np.allclose(layer, again)  # a seed gives the same chop; reshuffle = new seed
-    other, _ = chops.make_chops(v, SR, BPM, "A minor", style=style, seed=2)
+    other, _ = chops.make_chops(v, s.SR, s.BPM, "A minor", style=style, seed=2)
     assert not np.allclose(layer, other)
 
 
@@ -65,7 +79,8 @@ def test_chops_answer_the_vocal():
 def test_house_chops_sit_on_the_16th_grid():
     v = vocal_then_break()
     _, info = chops.make_chops(v, SR, BPM, "A minor", style="house", seed=4)
-    assert info.pattern and all(0 <= h["step"] < 16 and h["tone"] in (0, 1, 2, 3) for h in info.pattern)
+    assert info.pattern and all(0 <= h["step"] < 16 for h in info.pattern)
+    assert info.in_song == 1.0                                       # every chop note is a sung note
 
 
 def test_chops_stay_out_of_the_verses():
@@ -78,7 +93,7 @@ def test_chops_stay_out_of_the_verses():
     assert info.roles[:8].count("riff") == 0 and info.roles[8:].count("riff") >= 6
 
 
-SONG = Path(__file__).with_name("song_fixture.py")
+
 
 
 def test_finds_the_chorus_reads_the_chords_and_plays_in_tune():
@@ -93,6 +108,7 @@ def test_finds_the_chorus_reads_the_chords_and_plays_in_tune():
     true = set(s.chorus_bars)
     assert len(found & true) >= 0.8 * len(true) and len(found - true) <= 2
     assert info.chords[:4] == ["Am", "F", "C", "G"]
+    assert info.melody and {m["midi"] for m in info.melody} <= {64, 62, 60, 69, 67, 72, 71}  # the sung line
     assert info.notes and all(n["chorus"] for n in info.notes)          # held notes come from the chorus
     hs, he = info.hook
     assert any(a <= (hs + he) / 2 < e for a, e in info.chorus)           # so does the hook
@@ -196,14 +212,6 @@ def test_tools_analyse_lock_and_chop_for_real(tmp_path):
 # ------------------------------------------------- structure, reference mastering, AI textures
 
 from glore_engine import structure
-
-
-def load_song():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("song_fixture", SONG)
-    s = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(s)
-    return s
 
 
 def test_structure_adds_intro_drops_and_outro_on_the_bar_grid():

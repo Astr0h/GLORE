@@ -153,6 +153,15 @@ def op_chops(job, root, work, item, p):
                               bpm=bpm, style=style, seed=seed, hits=info.hits)]}
 
 
+def drum_beats(drums, bpm: float):
+    """Beat times of the generated drums (so chops sit on the real kicks, even if the tempo breathes)."""
+    import librosa
+    import numpy as np
+    y = librosa.resample(drums.mean(0), orig_sr=SR, target_sr=22050)
+    _, beats = librosa.beat.beat_track(y=y, sr=22050, start_bpm=bpm, tightness=400, units="time")
+    return np.asarray(beats, dtype=float)
+
+
 def beat_offset(beat, bpm: float) -> float:
     """Where the beat grid starts (first beat, folded into one beat length)."""
     import librosa
@@ -260,10 +269,12 @@ def op_mixsong(job, root, work, item, p):
             m = load(to_wav(p["music"], work / "orig_music.wav"))
             n = min(m.shape[1], dry.shape[1])
             structure = m[:, :n] + dry[:, :n]
+        bt = drum_beats(music.get("drums", beat_mix), bpm)
         chops, info = make_chops(dry, SR, bpm, p.get("key"), style=p["chops"], seed=int(p.get("chops_seed", 0)),
-                                 density=float(p.get("chops_density", 1)), offset=beat_offset(beat_mix, bpm),
-                                 harmony=beat_mix, structure=structure)
-        chop_info = {"chorus": info.chorus, "hook": info.hook, "chords": info.chords[:16], "hits": info.hits}
+                                 density=float(p.get("chops_density", 1)), offset=float(bt[0] % (60.0 / bpm)) if len(bt) else 0.0,
+                                 harmony=beat_mix, structure=structure, beat_times=bt)
+        chop_info = {"chorus": info.chorus, "hook": info.hook, "melody": info.melody[:16], "hits": info.hits,
+                     "in_song": info.in_song}
     master = p.get("master", "pack")   # "pack" | a library item id | "none"
     song, out = mix_song(music, wet, SR, bpm, chops=chops, vocal_db=float(p.get("vocal_db", 0)),
                          beat_db=float(p.get("beat_db", 0)), chops_db=float(p.get("chops_db", 0)),

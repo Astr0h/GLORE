@@ -77,6 +77,8 @@ class ChopInfo:
     chords: list = field(default_factory=list)
     pattern: list = field(default_factory=list)
     roles: list = field(default_factory=list)
+    melody: list = field(default_factory=list)
+    in_song: float | None = None   # share of chop notes that are notes the singer sang (1.0 = all)
 
     @property
     def slices(self) -> int:
@@ -320,8 +322,8 @@ def vocal_activity(mono: np.ndarray, sr: int, bpm: float, offset: float, n_bars:
 def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, style: str = "house",
                seed: int = 0, density: float = 1.0, length: float = 1.0, pitch_spread: float = 1.0,
                offset: float = 0.0, duck_under_vocal: float | None = None, duration: float | None = None,
-               harmony: np.ndarray | None = None, structure: np.ndarray | None = None
-               ) -> tuple[np.ndarray, ChopInfo]:
+               harmony: np.ndarray | None = None, structure: np.ndarray | None = None,
+               beat_times: np.ndarray | None = None) -> tuple[np.ndarray, ChopInfo]:
     """vocal: (2, n) float32 at sr. density/length/pitch_spread multiply the style (1 = as designed).
     duck_under_vocal: None = the style's own level under the vocal, 0 = no ducking, 1 = silent under it."""
     st = STYLES.get(style, STYLES["house"])
@@ -379,14 +381,17 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
         if k not in cache:
             shift = float(np.clip(target - n.midi, -14, 14))
             raw = cut(n.start, n.end)
-            x = _repitch(raw, sr, shift, st.resample)
+            if st.resample and abs(shift) >= 9:   # the octave jump: classic sampler pitch (speed)
+                x = _repitch(raw, sr, shift, True)
+            else:                                  # melody steps: keep the voice's character
+                x = _repitch(raw, sr, shift, False)
             x = _fit_length(x, int(dur * sr))
             cache[k] = x * _env(x.shape[1], sr, tail)
         return cache[k]
 
     lead = voice[0] if voice else Note(hook[0], hook[1], 60.0)
     # where the chops play - like a producer would use them, not everywhere:
-    #   riff  instrumental bars (intro build, drops, breaks, outro): the full chop riff
+    #   riff  instrumental bars (intro build, drops, breaks, outro): the chop riff
     #   light chorus bars: stay out of the vocal's way, only the stutter into the next section
     #   off   verses: the vocal carries those
     first_v = next((b for b in range(n_bars) if act[b] > 0.3), n_bars)
@@ -399,62 +404,95 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
         else:
             role.append("off")
     info.roles = role
-    centre = lead.midi + st.octave + 6 * (pitch_spread - 1)
-    steps = int(round(4 / st.step_beats))
-    if steps == 16:  # one classic 1-bar chop rhythm, repeated - a riff you can hum, not random hits
-        riff = rng.choice(RIFFS)
-        groove = [c == "x" for c in riff] * 2
-        keep = min(1.0, density)                        # less density = drop some hits, never add random ones
-        groove = [g and (i % 4 == 0 or rng.random() < keep) for i, g in enumerate(groove)]
-    else:
-        groove = [rng.random() < min(0.95, st.density * density * (1.3 if s % max(1, steps // 4) == 0 else 0.85))
-                  for s in range(steps * 2)]
-    tones = [rng.choice((0, 1, 2, 3)) for _ in range(steps)] * 2   # the same melody shape each bar
+
+    # the beat's own grid: chops land on the drums' actual beats, not a calculated one that drifts
+    bt = np.asarray(beat_times, dtype=float) if beat_times is not None and len(beat_times) > 8 else None
+
+    def at(pos: float) -> float:
+        """Time of `pos` beats after the first downbeat."""
+        whole = np.floor(pos)
+        t_whole = offset + whole * beat
+        if bt is not None:
+            j = int(np.argmin(np.abs(bt - t_whole)))
+            if abs(bt[j] - t_whole) < 0.3 * beat:
+                local = bt[j + 1] - bt[j] if j + 1 < len(bt) else beat
+                return float(bt[j] + (pos - whole) * local)
+        return float(offset + pos * beat)
+
+    # the riff is the song's own melody: the busiest 2 bars of the chorus line, note for note, on 16ths.
+    # Every pitch is one the singer sang, so it can't clash with the song.
+    mel_src = [n for n in notes if n.in_chorus] or notes
+    cands = []
+    for b0 in range(max(1, n_bars - 1)):
+        t0, t1 = offset + b0 * bar_s, offset + (b0 + 2) * bar_s
+        ns = [n for n in mel_src if t0 <= n.start < t1]
+        if len(ns) >= 3:
+            cands.append((len(ns), b0, ns))
+    # the seed picks one of the song's strongest lines (seed 0 = the strongest), so a reshuffle
+    # gives a different riff that is still the song's own melody
+    distinct, seen_pitches = [], set()
+    for c in sorted(cands, key=lambda c: (-c[0], c[1])):
+        sig = tuple(round(n.midi) for n in c[2])
+        if sig not in seen_pitches:
+            seen_pitches.add(sig)
+            distinct.append(c)
+    motif, motif_bar = ([], None) if not distinct else (distinct[seed % min(3, len(distinct))][2],
+                                                         distinct[seed % min(3, len(distinct))][1])
+    melody = []
+    if motif:
+        t0 = offset + motif_bar * bar_s
+        for n in motif:
+            step = int(round((n.start - t0) / (beat / 4)))
+            if 0 <= step < 32 and all(m["step"] != step for m in melody):
+                melody.append({"step": step, "midi": int(round(n.midi)),
+                               "beats": max(0.25, round((n.end - n.start) / beat * 4) / 4)})
+    info.melody = melody
     under = st.under_vocal if duck_under_vocal is None else 1.0 - duck_under_vocal
-    voicing = (0, 1, 2)
-    first_vocal = next((b for b in range(n_bars) if act[b] > 0.3), n_bars)
-    gate = st.gate_beats * beat * length
+    keep = [m for i, m in enumerate(melody) if m["step"] % 4 == 0 or rng.random() < min(1.0, density)]
+    if style == "house" and keep:   # a couple of 16th repeats, sampler-style (the seed picks which)
+        used = {m["step"] for m in keep}
+        for m in list(keep):
+            if m["step"] + 1 not in used and m["step"] % 16 != 15 and rng.random() < 0.3 * density:
+                keep.append({**m, "step": m["step"] + 1, "beats": 0.25})
+                used.add(m["step"] + 1)
+        keep.sort(key=lambda m: m["step"])
+    played_pcs = []
     for b in range(n_bars):
         t0 = offset + b * bar_s
-        chord = chords[b]
-        if b and b % 8 == 0 and rng.random() < 0.5:   # now and then a small variation on the last beat only
-            for i in list(range(steps - steps // 4, steps)) + list(range(2 * steps - steps // 4, 2 * steps)):
-                if rng.random() < 0.4:
-                    groove[i] = not groove[i]
-        level = 1.0  # ducking under the vocal happens below, following the vocal moment to moment
         in_chorus = any(a <= b < e for a, e in regions)
-        if role[b] in ("off", "light", "tease"):
-            pass
-        elif style == "gospel" and voice:
-            if b % 4 == 0:                              # a new voicing every 4 bars (the seed decides)
-                voicing = rng.choice(((0, 1, 2), (1, 2, 3), (2, 3, 1), (0, 2, 3)))
-            for i, n in enumerate(voice[:3]):          # each voice sings a chord tone: a stacked chord
-                play(sing(n, chord_tone(chord, voicing[i], centre + (12 if i == 2 else 0)), bar_s * length, st.tail),
-                     t0, level / np.sqrt(len(voice[:3])))
-            info.pattern.append({"bar": b, "chord": NOTES[chord[0]] + chord[1]})
-        else:
-            for s in range(steps):
-                gi = (b % 2) * steps + s
-                if not groove[gi]:
-                    continue
-                if style == "rnb" and hook and rng.random() < 0.5:   # the hook line, moved to the chord root
-                    h = Note(hook[0], hook[1], lead.midi)
-                    x = sing(h, chord_tone(chord, 0, centre), gate, st.tail)
-                else:
-                    x = sing(lead, chord_tone(chord, tones[gi], centre), gate, st.tail)
-                play(x, t0 + s * st.step_beats * beat, level)
-                if len(info.pattern) < 64:   # the first few bars of the riff, for display and tests
-                    info.pattern.append({"bar": b, "step": s, "tone": tones[gi]})
-        if hook and role[b] == "tease" and b % 4 == 3:        # tease the hook in the intro
+        if role[b] == "riff" and keep:
+            half = b % 2                                   # the motif is 2 bars long
+            bar_notes = [m for m in keep if (m["step"] // 16) == half]
+            if style == "gospel" and voice:              # the bar's sung notes, held together as one chord
+                pcs = sorted({m["midi"] for m in bar_notes})[:3] or [round(lead.midi)]
+                for m in pcs:
+                    play(sing(lead, m + st.octave, bar_s * length, st.tail), at(4 * b), 1.0 / np.sqrt(len(pcs)))
+                    played_pcs.append(m % 12)
+                info.pattern.append({"bar": b, "notes": pcs})
+            else:
+                for m in bar_notes:
+                    gate = min(m["beats"], st.gate_beats if style == "house" else m["beats"]) * beat * length
+                    # house: the classic pitched-up sampler (an exact octave, so still in key)
+                    target = m["midi"] + (12 if style == "house" else st.octave)
+                    play(sing(lead, target, max(gate, 0.06), st.tail), at(4 * b + (m["step"] % 16) / 4), 1.0)
+                    played_pcs.append(m["midi"] % 12)
+                    if len(info.pattern) < 64:
+                        info.pattern.append({"bar": b, "step": m["step"] % 16, "midi": m["midi"]})
+        elif role[b] == "riff" and not keep and voice:   # no clear melody: hold the best sung note, in time
+            for k in (0, 2):
+                play(sing(lead, round(lead.midi) + st.octave, 1.5 * beat * length, st.tail), at(4 * b + k), 1.0)
+                played_pcs.append(round(lead.midi) % 12)
+        if hook and role[b] == "tease" and b % 4 == 3:        # tease the hook in the intro, as sung
             seg = cut(*hook)
-            play(seg * _env(seg.shape[1], sr, 0.3), t0 + 2 * beat, 0.8)
+            play(seg * _env(seg.shape[1], sr, 0.3), at(4 * b + 2), 0.8)
         last_of_part = b + 1 >= n_bars or role[b + 1] != role[b]
-        if hook and st.stutter_every and role[b] in ("light", "riff") and (last_of_part or (
-                role[b] == "riff" and b % (2 * st.stutter_every) == 2 * st.stutter_every - 1)):
-            piece = cut(hook[0], hook[0] + beat / 2)       # "I-I-I-I want" into the next bar
+        if hook and st.stutter_every and role[b] in ("light", "riff") and last_of_part:
+            piece = cut(hook[0], hook[0] + beat / 2)       # "I-I-I-I want" into the next section, as sung
             for k in range(4):
                 p = piece[:, :int(beat / 4 * sr)] if k < 3 else piece
-                play(p * _env(p.shape[1], sr, 0.0), t0 + 3 * beat + k * beat / 4, 0.9)
+                play(p * _env(p.shape[1], sr, 0.0), at(4 * b + 3 + k / 4), 0.9)
+    sung_pcs = {round(n.midi) % 12 for n in notes}
+    info.in_song = round(float(np.mean([pc in sung_pcs for pc in played_pcs])), 3) if played_pcs else None
 
     if st.tail:
         import pedalboard

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+sys.path.insert(0, str(Path(__file__).parent))
 import soundfile as sf
 
 from glore_engine import chops, fx, mixing
@@ -290,3 +291,23 @@ def test_ai_textures_only_fill_the_gaps():
     sung = np.mean([np.abs(tex[:, b * bar + int(0.5 * BEAT * SR):b * bar + int(2.7 * BEAT * SR)]).mean() for b in range(4)])
     gap = np.abs(tex[:, 5 * bar:7 * bar]).mean()
     assert gap > 5 * sung
+
+
+@pytest.mark.parametrize("kind", ["pop", "house", "gospel", "rnb", "rap"])
+def test_chops_work_on_every_kind_of_vocal(kind):
+    """Not tuned to one song: sung lines, harmonies, runs and rap all get chops that fit."""
+    import librosa
+    from vocal_bench import BENCH
+    v, sr, bpm, pcs, sung_bars = BENCH[kind]()
+    bar = int(4 * 60 / bpm * sr)
+    layer, info = chops.make_chops(v, sr, bpm, None, style="house", seed=0)
+    assert info.hits > 0
+    assert np.abs(layer[:, sung_bars * bar:]).mean() > 2.5 * np.abs(layer[:, :sung_bars * bar]).mean()  # break, not verses
+    if pcs is None:
+        assert info.mode == "rhythm"            # rap: the hook's syllables, not an invented tune
+    else:
+        assert info.mode == "melody" and info.in_song == 1.0
+        y = librosa.resample(layer[:, sung_bars * bar:].mean(0), orig_sr=sr, target_sr=22050)
+        f0, vo, _ = librosa.pyin(y, fmin=100, fmax=2000, sr=22050, hop_length=512)
+        p = np.round(librosa.hz_to_midi(f0[vo])) % 12
+        assert len(p) and np.isin(p, list(pcs)).mean() >= 0.85   # what you hear is in the song's key

@@ -79,6 +79,8 @@ class ChopInfo:
     roles: list = field(default_factory=list)
     melody: list = field(default_factory=list)
     in_song: float | None = None   # share of chop notes that are notes the singer sang (1.0 = all)
+    mode: str = ""                 # melody (sung) | rhythm (rapped) | hold
+    sung: float | None = None      # share of the vocal that holds a steady tone
 
     @property
     def slices(self) -> int:
@@ -175,6 +177,42 @@ def find_notes(y: np.ndarray, min_len: float = 0.12) -> list[Note]:
                               stability=float(1.0 / (0.15 + np.std(seg))), energy=float(rms[i:j + 1].mean())))
         i = j + 1
     return notes
+
+
+def delivery(y: np.ndarray) -> tuple[float, list[Note]]:
+    """How sung the vocal is (share of its loud moments that hold a steady tone, harmonies included),
+    and the held notes read from the chroma - which, unlike pYIN, follows several voices at once."""
+    import librosa
+    hop = 512
+    rms = librosa.feature.rms(y=y, hop_length=hop)[0]
+    chroma = librosa.feature.chroma_cqt(y=y, sr=ASR, hop_length=hop)[:, :len(rms)]
+    loud = rms > 0.3 * (np.percentile(rms, 95) + 1e-9)
+    c = chroma / (np.linalg.norm(chroma, axis=0, keepdims=True) + 1e-9)
+    sim = np.r_[0, (c[:, 1:] * c[:, :-1]).sum(0)]
+    tonal = chroma.max(0) / (chroma.mean(0) + 1e-9) > 2.4   # a clear pitch, not hiss (noise has flat chroma)
+    steady = loud & tonal & (sim > 0.92)
+    fps, need = ASR / hop, int(0.18 * ASR / hop)
+    runs, i, held = [], 0, 0
+    while i < len(steady):
+        if steady[i]:
+            j = i
+            while j + 1 < len(steady) and steady[j + 1]:
+                j += 1
+            if j - i + 1 >= need:
+                held += j - i + 1
+                runs.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    ratio = held / max(1, int(loud.sum()))
+    notes = []
+    for a, b in runs:  # the strongest pitch classes of each held stretch: the melody note, plus harmony
+        prof = chroma[:, a:b].mean(1)
+        for pc in np.argsort(prof)[::-1][:2]:
+            if prof[pc] >= 0.6 * prof.max():
+                notes.append(Note(start=a / fps, end=b / fps, midi=float(pc), stability=2.0,
+                                  energy=float(rms[a:b].mean())))
+    return ratio, notes
 
 
 def find_hook(y: np.ndarray, bpm: float, chorus_s: list[tuple[float, float]]) -> tuple[float, float] | None:
@@ -344,6 +382,15 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
     regions, _ = find_chorus(_mono(structure, sr) if structure is not None else y, bpm, offset, n_bars, act)
     chorus_s = [(offset + a * bar_s, offset + b * bar_s) for a, b in regions]
     notes = find_notes(y)
+    held_ratio, chroma_notes = delivery(y)
+    covered = sum(n.end - n.start for n in notes)
+    if held_ratio >= 0.3 and covered < 0.5 * sum(n.end - n.start for n in chroma_notes):
+        # sung, but pYIN lost the line (harmonies, stacked voices): take the notes from the chroma,
+        # in the octave the voice actually sits in
+        centre = float(np.median([n.midi for n in notes])) if notes else 64.0
+        for n in chroma_notes:
+            n.midi = n.midi + 12 * round((centre - n.midi) / 12)
+        notes = sorted(notes + chroma_notes, key=lambda n: n.start)
     if notes:
         e_max = max(n.energy for n in notes) or 1.0
         pcs = [round(n.midi) % 12 for n in notes if any(a <= n.start < b for a, b in chorus_s)]
@@ -447,6 +494,26 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
                 melody.append({"step": step, "midi": int(round(n.midi)),
                                "beats": max(0.25, round((n.end - n.start) / beat * 4) / 4)})
     info.melody = melody
+    # rap / spoken vocals have no tune to replay: chop the hook's syllables instead and play them, at their
+    # own pitch, in the hook's own rhythm - the chop follows how the line is delivered rather than notes
+    sung_ratio = held_ratio
+    info.sung = round(sung_ratio, 2)
+    rapped = sung_ratio < 0.3 or not (melody or voice)
+    syllables = []
+    if rapped and hook:
+        import librosa
+        hs, he = hook
+        seg = y[int(hs * ASR):int(he * ASR)]
+        ons = librosa.onset.onset_detect(y=seg, sr=ASR, units="time", backtrack=True, hop_length=256)
+        ons = [hs + o for o in ons] or [hs]
+        ends = ons[1:] + [he]
+        syllables = [(a, min(e, a + beat / 2)) for a, e in zip(ons, ends) if e - a > 0.05][:8]
+        if syllables:  # the rhythm they were delivered in, on 16ths from the first one
+            base = syllables[0][0]
+            info.melody = [{"step": int(round((a - base) / (beat / 4))) % 16, "syllable": i}
+                           for i, (a, _) in enumerate(syllables)]
+            melody = []
+    info.mode = "rhythm" if syllables else ("melody" if melody else "hold")
     under = st.under_vocal if duck_under_vocal is None else 1.0 - duck_under_vocal
     keep = [m for i, m in enumerate(melody) if m["step"] % 4 == 0 or rng.random() < min(1.0, density)]
     if style == "house" and keep:   # a couple of 16th repeats, sampler-style (the seed picks which)
@@ -478,6 +545,17 @@ def make_chops(vocal: np.ndarray, sr: int, bpm: float, key: str | None = None, s
                     played_pcs.append(m["midi"] % 12)
                     if len(info.pattern) < 64:
                         info.pattern.append({"bar": b, "step": m["step"] % 16, "midi": m["midi"]})
+        elif role[b] == "riff" and syllables:            # rap: the hook's syllables in its own rhythm
+            used = set()
+            for m in info.melody:
+                if m["step"] in used or (m["step"] % 4 and rng.random() > min(1.0, density)):
+                    continue
+                used.add(m["step"])
+                a, e = syllables[m["syllable"]]
+                x = cut(a, min(e, a + st.gate_beats * beat * 2 * length))
+                play(x * _env(x.shape[1], sr, 0.02), at(4 * b + m["step"] / 4), 1.0)
+                if len(info.pattern) < 64:
+                    info.pattern.append({"bar": b, "step": m["step"], "syllable": m["syllable"]})
         elif role[b] == "riff" and not keep and voice:   # no clear melody: hold the best sung note, in time
             for k in (0, 2):
                 play(sing(lead, round(lead.midi) + st.octave, 1.5 * beat * length, st.tail), at(4 * b + k), 1.0)

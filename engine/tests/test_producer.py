@@ -34,6 +34,7 @@ def world():
     from glore_engine import fxrack
     for part, x in fxrack.make_kit("house", 120, s.SR, s.BPM).items():
         src[f"kit.{part}"] = Source(x)
+    src["kit.bass"] = Source(fxrack.make_bass([9, 5, 0, 7] * 30, "house", s.SR, s.BPM))
     session.calibrate(src, s.SR)
     bars = {k: v.bars(s.SR, s.BPM) for k, v in src.items()}
     return m, src, bars
@@ -64,7 +65,7 @@ def test_rule_plan_renders_as_an_arranged_song(world):
     assert met["energy_follows_plan"] > 0.5
     # the guide is the lead vocal alone, and the whole vocal is in it
     g = session.render(plan, src, s.SR, guide_only=True)
-    assert list(g["tracks"]) == ["lead", "kit"]               # the beat is built around the vocal and the drums
+    assert list(g["tracks"]) == ["lead", "kit", "bass"]       # built around the vocal, the drums and the bassline
     assert abs(float(np.abs(g["tracks"]["lead"]).sum()) / float(np.abs(src["vocal"].audio).sum()) - 1) < 0.02
 
 
@@ -195,10 +196,11 @@ def test_a_drop_without_drums_gets_a_kit_and_weak_mixes_are_flagged(world):
     met = producer.measure(session.render(plan, src, s.SR), plan, s.SR)
     assert any("drop: high energy but the drums are weak" in p for p in met["problems"])
     assert any("no drum tracks" in p for p in met["problems"])
-    assert session.ensure_backbone(plan) == ["drop"]
+    assert session.ensure_backbone(plan) == ["drop", "drop (bass)"]
     out = session.render(plan, src, s.SR)
     met = producer.measure(out, plan, s.SR)
-    assert not any("drums" in p for p in met["problems"]) and met["sections"][1]["drums_minus_mix_db"] > -9
+    assert not any("drums" in p or "bass" in p for p in met["problems"]) and met["sections"][1]["drums_minus_mix_db"] > -9
+    assert met["sections"][1]["bass_minus_mix_db"] > -14
     assert session.ensure_backbone(plan) == []                             # already covered: nothing more added
 
 
@@ -218,3 +220,34 @@ def test_sources_are_level_matched():
     k = np.abs(kit["kick"][0])
     assert all(k[int(b * bar / 4):int(b * bar / 4) + 400].max() > 0.3 for b in range(16))   # four on the floor
     assert -24 < db(kit["full"]) < -13                                                       # sits with a -20 dB vocal
+
+
+def test_bass_follows_the_songs_harmony(world):
+    import librosa
+    from glore_engine import fxrack
+    m, src, bars = world
+    # with the original's bass stem: its roots, bar by bar
+    n = len(s.voc)
+    t = np.arange(n) / s.SR
+    bar = int(s.BAR * s.SR)
+    bass = np.zeros(n, np.float32)
+    for b in range(n // bar):
+        f = 440 * 2 ** (([45, 41, 36, 43][b % 4] - 69) / 12)        # A F C G
+        bass[b * bar:(b + 1) * bar] = 0.4 * np.sin(2 * np.pi * f * t[:bar])
+    roots = songmap.bar_roots(np.stack([bass, bass]), [], s.SR, s.BPM, 0.0, n // bar, "A minor")
+    assert roots[:8] == [9, 5, 0, 7, 9, 5, 0, 7]
+    # from the vocal alone: in-key roots that contain what is sung
+    assert set(m["roots"]) <= {9, 0, 2, 4, 5, 7} and len(m["roots"]) == m["bars"] and len(m["root_cycle"]) == 4
+    # under an arrangement: the lead's source bar decides; elsewhere the chorus cycle carries on
+    plan = {"bars": 12, "tracks": [{"guide": True, "clips": [{"at": 4, "src": "vocal", "from": 2, "bars": 4}]}]}
+    assert songmap.plan_roots(plan, roots, [9, 5, 0, 7])[:9] == [9, 5, 0, 7, 0, 7, 9, 5, 9]
+    # and the bass machine plays those notes
+    x = fxrack.make_bass([9, 5], "house", s.SR, s.BPM)
+    y = librosa.resample(x.mean(0), orig_sr=s.SR, target_sr=22050)
+    f0, vo, _ = librosa.pyin(y, fmin=30, fmax=200, sr=22050, hop_length=512, frame_length=4096)
+    half = len(f0) // 2
+    pc = lambda seg, v: int(np.bincount(np.round(librosa.hz_to_midi(seg[v])).astype(int) % 12).argmax())
+    assert pc(f0[:half], vo[:half]) == 9 and pc(f0[half:], vo[half:]) == 5
+    k = np.abs(fxrack.make_kit("house", 2, s.SR, s.BPM)["kick"][0])
+    beat = int(s.BEAT * s.SR)
+    assert np.abs(x[0][:int(0.1 * s.SR)]).max() < 0.01              # silent on the kick: the offbeat pump

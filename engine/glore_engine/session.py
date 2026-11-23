@@ -285,6 +285,22 @@ def ensure_backbone(plan: dict, style: str = "house") -> list[str]:
         if covered < 0.7 * sec["bars"]:
             clips.append({"at": a, "src": "kit.full", "from": a, "bars": sec["bars"], "gain_db": 0.0, "fx": []})
             added.append(sec["name"])
+    bass_clips = [c for t in plan["tracks"] if t["role"] == "bass" and not t["mute"] for c in t["clips"]
+                  if c["src"] == "kit.bass" and c["gain_db"] > -9
+                  and not any(f.get("type") in ("filter", "eq", "telephone") for f in c["fx"])]
+    bclips = []
+    for sec in plan.get("sections", []):
+        if sec["energy"] < 0.7:
+            continue
+        a, b = sec["start"], sec["start"] + sec["bars"]
+        covered = sum(max(0.0, min(b, c["at"] + c["bars"]) - max(a, c["at"])) for c in bass_clips)
+        if covered < 0.7 * sec["bars"]:
+            bclips.append({"at": a, "src": "kit.bass", "from": a, "bars": sec["bars"], "gain_db": 0.0, "fx": []})
+            added.append(f"{sec['name']} (bass)")
+    if bclips:
+        plan["tracks"].append({"id": "bass_backbone", "group": "music", "role": "bass", "guide": False, "mute": False,
+                               "gain_db": 0.0, "pan": 0.0, "sidechain_db": 6.0, "pocket": None, "sends": {}, "fx": [],
+                               "clips": bclips})
     if clips:
         plan["tracks"].append({"id": "kit_backbone", "group": "music", "role": "drums", "guide": False, "mute": False,
                                "gain_db": 0.0, "pan": 0.0, "sidechain_db": None, "pocket": None, "sends": {}, "fx": [],

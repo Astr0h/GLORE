@@ -287,12 +287,13 @@ def op_pmap(job, root, work, item, p):
     if riff is not None:
         save(d / "chopriff.wav", riff)
         bars["chopriff"] = 4
-    for k in ("bed.bass", "bed.other", "bed.vox", "kit.full", "kit.kick", "kit.clap", "kit.hats", "kit.perc"):
+    for k in ("bed.bass", "bed.other", "bed.vox", "kit.bass", "kit.full", "kit.kick", "kit.clap", "kit.hats", "kit.perc"):
         bars[k] = BED_BARS
     for k, v in stems.items():
         save(d / f"orig.{k}.wav", v)
         bars[f"orig.{k}"] = m["bars"]
-    meta = {"bpm": bpm, "key": p.get("key"), "offset": offset, "source_bars": bars}
+    meta = {"bpm": bpm, "key": p.get("key"), "offset": offset, "source_bars": bars, "roots": m["roots"],
+            "root_cycle": m["root_cycle"]}
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     (d / "songmap.json").write_text(json.dumps(m), encoding="utf-8")
     return {"songmap": m, "source_bars": bars, "sid": p["sid"]}
@@ -320,6 +321,11 @@ def _psources(d: Path, plan: dict, work: Path) -> dict:
     kit = fxrack.make_kit(plan.get("style") or "house", int(plan["bars"]) + 1, SR, bpm)
     for part, x in kit.items():
         out[f"kit.{part}"] = Source(x, 0.0)
+    if meta.get("roots"):
+        from glore_engine.songmap import plan_roots
+        tr = int(round(float(plan.get("transpose") or 0)))
+        roots = [(r + tr) % 12 for r in plan_roots(plan, meta["roots"], meta.get("root_cycle"))]
+        out["kit.bass"] = Source(fxrack.make_bass(roots, plan.get("style") or "house", SR, bpm), 0.0)
     return out
 
 

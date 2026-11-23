@@ -51,13 +51,14 @@ revision rebuilds the bed.
 
 The "kit.*" sources are a drum machine locked to the grid over the whole timeline (kit.kick, kit.clap, kit.hats, \
 kit.perc, or kit.full for all four), in the pack's style. They are the only drums: build the whole groove from them, part by part. Put kit tracks in group "music" with \
-role "drums".
+role "drums". "kit.bass" is the bassline (role "bass"): it follows the song's harmony and ducks to the kick. The \
+generated bed.bass is usually faint - use kit.bass as THE bass and bed.bass, if at all, as a layer.
 All sources are level-matched (vocal, bed and kit sit together at gain 0), so gain_db is a real mix decision: 0 is \
 "at full level", -6 clearly back, -12 background.
 
 # What makes it sound like a record in this style
 {style_guide}
-- Every section with energy 0.7 or more has the full kit (kick, clap, hats) and unfiltered bass, start to finish. \
+- Every section with energy 0.7 or more has the full kit (kick, clap, hats) and unfiltered kit.bass, start to finish. \
 A drop is the fullest, loudest part of the song: all drums, bass, music wide open, and the hook or chops on top.
 - Quieter sections keep a pulse (hats or a filtered kick) unless it is a deliberate break of 1-4 bars. Do not \
 high-pass or bury the drums for whole verses; thin them instead (drop the clap, or the kick, not everything).
@@ -130,6 +131,7 @@ def describe_sources(source_bars: dict[str, float]) -> str:
              "chopriff": "a ready-made vocal-chop riff from the song's own melody, loopable",
              "bed.bass": "new instrumental: bass",
              "bed.other": "new instrumental: chords, synths, keys", "bed.vox": "the model's own vocal-like textures (use low, in gaps)",
+             "kit.bass": "bass machine: a sub bassline on the grid that follows the song's chord roots under your arrangement",
              "kit.full": "drum machine: kick, clap, hats and perc together, on the grid",
              "kit.kick": "drum machine: kick", "kit.clap": "drum machine: clap / snare",
              "kit.hats": "drum machine: hats", "kit.perc": "drum machine: shaker / percussion",
@@ -281,7 +283,7 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
         if drums:
             tracks["kit"].append({"at": at, "src": kit, "from": at, "bars": bars, "fx": drum_fx or []})
         if bass:
-            tracks["bass"].append({"at": at, "src": "bed.bass", "from": at, "bars": bars})
+            tracks["bass"].append({"at": at, "src": "kit.bass", "from": at, "bars": bars})
         if music:
             tracks["music"].append({"at": at, "src": "bed.other", "from": at, "bars": bars, "fx": music_fx or []})
         if has("bed.vox"):
@@ -385,7 +387,7 @@ def measure(out: dict, plan: dict, sr: int) -> dict:
     quiet = [round(i * hop / bar, 1) for i in range(int(mix.shape[1] / hop)) if _db(mix[:, i * hop:(i + 1) * hop]) < -50]
     offgrid = [f"{t['id']} clip at bar {c['at']:g}" for t in plan["tracks"] if t["group"] == "vocal" and t["guide"]
                for c in t["clips"] if c["bars"] >= 1 and abs((c["at"] - c["from"]) - round(c["at"] - c["from"])) > 0.01]
-    drums = groups.get("drums")
+    drums, bassg = groups.get("drums"), groups.get("bass")
     problems = []
     real = [x for x in plan.get("sections", []) if int((x["start"] + x["bars"]) * bar) > int(x["start"] * bar)]
     for s_, row in zip(real, secs):
@@ -394,6 +396,10 @@ def measure(out: dict, plan: dict, sr: int) -> dict:
             row["drums_minus_mix_db"] = round(_db(drums[:, a:b]) - _db(mix[:, a:b]), 1)
         if s_["energy"] >= 0.7 and (drums is None or row.get("drums_minus_mix_db", -99) < -12):
             problems.append(f"{row['name']}: high energy but the drums are weak or missing")
+        if bassg is not None:
+            row["bass_minus_mix_db"] = round(_db(bassg[:, a:b]) - _db(mix[:, a:b]), 1)
+        if s_["energy"] >= 0.7 and (bassg is None or row.get("bass_minus_mix_db", -99) < -16):
+            problems.append(f"{row['name']}: high energy but the bass is weak or missing (use kit.bass)")
         if row.get("vocal_minus_music_db") is not None and row["vocal_minus_music_db"] < -10:
             problems.append(f"{row['name']}: the lead vocal is buried")
     hi = [r["loudness_db"] for r in secs if r["planned_energy"] >= 0.8]

@@ -486,3 +486,39 @@ def make_kit(style: str, bars: int, sr: int, bpm: float, seed: int = 0) -> dict[
         out[part] = np.stack([x * (1 - max(0, pan)), x * (1 + min(0, pan))]).astype(np.float32)
     out["full"] = sum(out[p] for p in KIT_PARTS).astype(np.float32)
     return out
+
+
+# ---------------------------------------------------------------- bass machine
+
+BASS_PATTERNS = {   # 16 steps: digit = note length in steps (octave up if upper-case letter), . = rest
+    "house": "..2...2...2...2.",        # the offbeat pump, ducking out of the kick's way
+    "garage": "3..2....2.3..2..",
+    "rnb": "6.......4.2.....",          # long 808s on the kick
+    "gospel": "4...2...4...2.2.",
+}
+
+
+def make_bass(roots: list[int | None], style: str, sr: int, bpm: float) -> np.ndarray:
+    """A sub bassline, one root (pitch class 0-11, or None = rest) per bar, in the style's rhythm."""
+    bar = int(round(240.0 / bpm * sr))
+    step = bar / 16
+    n = len(roots) * bar
+    x = np.zeros(n + sr, dtype=np.float32)
+    pat = BASS_PATTERNS.get(style, BASS_PATTERNS["house"])
+    for b, pc in enumerate(roots):
+        if pc is None:
+            continue
+        midi = 33 + (int(pc) - 9) % 12            # A1..G#2: low enough to be a sub, high enough to hear
+        f = 440 * 2 ** ((midi - 69) / 12)
+        for s, ch in enumerate(pat):
+            if ch == ".":
+                continue
+            L = int(int(ch) * step * 0.92)
+            t = np.arange(L) / sr
+            env = np.minimum(1, t * 250) * np.minimum(1, (t[-1] - t) * 60) * (0.75 + 0.25 * np.exp(-t * 6))
+            ph = 2 * np.pi * f * t
+            note = np.tanh((np.sin(ph) + 0.35 * np.sin(2 * ph) + 0.12 * np.sin(3 * ph)) * 1.4) * env
+            pos = int(b * bar + s * step)
+            x[pos:pos + L] += (note * 0.32).astype(np.float32)[:len(x) - pos]
+    x = x[:n]
+    return np.stack([x, x]).astype(np.float32)

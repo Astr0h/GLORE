@@ -91,12 +91,76 @@ def build(vocal: np.ndarray, sr: int, bpm: float, key: str | None, offset: float
          "held_notes": [{"bar": to_bar(n.start), "bars": round((n.end - n.start) / bar_s, 3), "midi": int(round(n.midi)),
                          "chorus": n.in_chorus} for n in sorted(best, key=lambda n: n.start)],
          "sung_notes": sorted({int(round(n.midi)) % 12 for n in notes})}
+    roots = bar_roots(music.get("bass") if music else None, notes, sr, bpm, offset, n_bars, key)
+    first_chorus = regions[0][0] if regions else 0
+    m["roots"] = roots
+    m["root_cycle"] = roots[first_chorus:first_chorus + 4] or roots[:4]
+    m["bass_notes"] = "roots per bar as pitch classes (0 = C); the kit.bass line follows them wherever the lead plays"
     if music:
         harm = sum(v for k, v in music.items() if k != "drums")
         ch = chops.chord_track(harm, sr, bpm, offset, n_bars, key)
         m["original"] = {"chords": [chops.NOTES[r] + q for r, q in ch],
                          "energy_per_bar": [round(float(e), 1) for e in energy]}
     return m
+
+
+def bar_roots(bass: np.ndarray | None, vocal_notes: list, sr: int, bpm: float, offset: float, n_bars: int,
+              key: str | None) -> list[int | None]:
+    """The harmony's root for each bar (pitch class): read from the original's bassline if there is one,
+    otherwise the in-key chord that best fits what is sung in that stretch."""
+    bar_s = 240.0 / bpm
+    roots: list[int | None] = [None] * n_bars
+    if bass is not None and float(np.max(np.abs(bass))) > 1e-4:
+        import librosa
+        y = chops._mono(bass, sr)
+        f0, voiced, _ = librosa.pyin(y, fmin=30, fmax=220, sr=chops.ASR, hop_length=1024, frame_length=4096)
+        rms = librosa.feature.rms(y=y, hop_length=1024, frame_length=4096)[0][:len(f0)]
+        fps = chops.ASR / 1024
+        for b in range(n_bars):
+            a, e = int((offset + b * bar_s) * fps), int((offset + (b + 1) * bar_s) * fps)
+            v = voiced[a:e]
+            if v.sum() >= 3:
+                pcs = np.round(librosa.hz_to_midi(f0[a:e][v])).astype(int) % 12
+                w = np.bincount(pcs, weights=rms[a:e][v], minlength=12)
+                roots[b] = int(np.argmax(w))
+    else:
+        dia = chops.diatonic_triads(key)
+        tonic = chops.parse_key(key)[0]
+        for b0 in range(0, n_bars, 2):                       # a chord per 2 bars
+            t0, t1 = offset + b0 * bar_s, offset + (b0 + 2) * bar_s
+            w = np.zeros(12)
+            for n in vocal_notes:
+                ov = min(n.end, t1) - max(n.start, t0)
+                if ov > 0:
+                    w[int(round(n.midi)) % 12] += ov
+            if w.sum() > 0:
+                best = max(dia, key=lambda c: sum(w[(c[0] + iv) % 12] for iv in chops.TRIADS[c[1]]) + (0.15 * w.sum() if c[0] == tonic else 0))
+                roots[b0:b0 + 2] = [best[0]] * len(roots[b0:b0 + 2])
+    last = next((r for r in roots if r is not None), chops.parse_key(key)[0])
+    for i, r in enumerate(roots):                           # hold the last root through gaps
+        if r is None:
+            roots[i] = last
+        last = roots[i]
+    return roots
+
+
+def plan_roots(plan: dict, roots: list[int], default_cycle: list[int] | None = None) -> list[int]:
+    """Roots for every OUTPUT bar: wherever the lead vocal plays, the root from its source bar; elsewhere,
+    the chorus's own chord cycle keeps going."""
+    n = int(plan["bars"]) + 1
+    out: list[int | None] = [None] * n
+    for t in plan["tracks"]:
+        if not t.get("guide"):
+            continue
+        for c in t["clips"]:
+            if c["bars"] < 1 or c["src"] != "vocal":
+                continue
+            for b in range(int(np.floor(c["at"])), int(np.ceil(c["at"] + c["bars"]))):
+                sb = int(np.floor(b - c["at"] + c["from"]))
+                if 0 <= b < n and 0 <= sb < len(roots):
+                    out[b] = roots[sb]
+    cycle = default_cycle or (roots[:4] if roots else [9])
+    return [r if r is not None else cycle[b % len(cycle)] for b, r in enumerate(out)]
 
 
 def riff_loop(vocal: np.ndarray, sr: int, bpm: float, key: str | None, offset: float = 0.0, style: str = "house",

@@ -217,7 +217,28 @@ def add(name, kind):
     open(os.path.join(d, "a.flac"), "wb").write(b"flac")
     it = {"id": i, "name": name, "kind": kind, "file": f"library/{i}/a.flac", "created": time.time(), "parent": item.get("id")}
     open(os.path.join(d, "item.json"), "w").write(json.dumps(it)); return it
-if op == "arrange":
+if op == "pmap":
+    d = os.path.join(root, "glore", "produce", p["sid"]); os.makedirs(d, exist_ok=True)
+    json.dump({"bpm": 124, "key": "A minor", "offset": 0}, open(os.path.join(d, "meta.json"), "w"))
+    m = {"bpm": 124.0, "key": "A minor", "bars": 16, "kind": "vocal", "delivery": {"sung": 0.9, "style": "sung"},
+         "sections": [{"name": "verse 1", "kind": "verse", "start": 0, "bars": 8}, {"name": "chorus 1", "kind": "chorus", "start": 8, "bars": 8}],
+         "hook": {"bar": 8, "bars": 1}, "phrases": [], "held_notes": [], "sung_notes": [9]}
+    print("GLORE_RESULT " + json.dumps({"songmap": m, "sid": p["sid"], "source_bars": {"vocal": 16, "chopriff": 4,
+          "bed.drums": 400, "bed.bass": 400, "bed.other": 400, "bed.vox": 400}}))
+elif op == "pguide":
+    g = os.path.join(root, "glore", "produce", p["sid"], "guide.wav"); open(g, "wb").write(b"guide")
+    print("GLORE_RESULT " + json.dumps({"guide": g, "duration": 60.0, "warnings": []}))
+elif op == "prender":
+    assert os.path.exists(p["bed"])
+    b = p["out_base"]
+    for f in (b + ".mp3", b + " (beat).mp3", b + " (stems).zip"):
+        open(f, "wb").write(b"x")
+    n = len([f for f in os.listdir(root) if f.startswith("seen-prender-")])
+    open(os.path.join(root, f"seen-prender-{n}.json"), "w").write(json.dumps(job))
+    print("GLORE_RESULT " + json.dumps({"mp3": b + ".mp3", "beat_mp3": b + " (beat).mp3", "zip": b + " (stems).zip",
+          "mastered_to": "house pack", "duration": 60.0,
+          "metrics": {"length_seconds": 60.0, "sections": [], "tracks_gain": [t.get("gain_db", 0) for t in p["plan"]["tracks"]]}}))
+elif op == "arrange":
     print("GLORE_RESULT " + json.dumps({"vocal": p["vocal"], "music": p.get("music"), "duration": 28.5,
           "hint": "arranged like a finished record, with big instrumental drops after the chorus",
           "plan": {"sections": [{"part": "intro", "start": 0, "end": 16}, {"part": "vocal", "start": 16, "end": 28.5}]}}))
@@ -409,3 +430,67 @@ def test_no_gpu_shows_in_the_app_and_leaves_nothing_queued(cli, tmp_path, monkey
     st = cloud_cli.build_state(cli["mgr"])
     err = next(j for j in st["jobs"] if j["mode"] == "song")
     assert err["phase"] == "error" and "free in" in err["error"]
+
+
+def test_produce_plans_builds_measures_and_revises(cli, tmp_path, monkeypatch):
+    from glore_engine import producer
+    ace = SongAce(tmp_path)
+    cli["rp"].ace = ace
+    vol = cli["vol"]
+    src = tmp_path / "v.wav"
+    src.write_bytes(tiny_wav())
+    item = cloud_cli.library_add(vol, src, "My vocal", "vocal", "upload")
+    vol.put_bytes("loras/house/runX/final/adapter_model.safetensors", b"w")
+    plan = {"title": "Night drive", "notes": "Kept the hook, built two drops.", "bpm": 124, "bars": 32,
+            "bed": {"caption": "dark garage, shuffled drums"},
+            "sections": [{"name": "intro", "start": 0, "bars": 8, "energy": 0.3}, {"name": "drop", "start": 8, "bars": 24, "energy": 1}],
+            "tracks": [{"id": "lead", "group": "vocal", "guide": True, "clips": [{"at": 8, "src": "vocal", "from": 0, "bars": 16}]},
+                       {"id": "drums", "role": "drums", "clips": [{"at": 8, "src": "bed.drums", "from": 8, "bars": 24}]}]}
+    asked = []
+
+    def fake_ask(system, user, model, key, **k):
+        asked.append(user)
+        if len(asked) == 1:
+            return json.loads(json.dumps(plan)), {"input_tokens": 1, "output_tokens": 2}
+        louder = json.loads(json.dumps(plan))
+        louder["tracks"][0]["gain_db"] = 2          # the second look: lead up 2 dB, vocal left where it is
+        return louder, {}
+    monkeypatch.setattr(producer, "ask", fake_ask)
+    monkeypatch.setenv("GLORE_ANTHROPIC_KEY", "k")
+    tf = tmp_path / "spec.json"
+    tf.write_text(json.dumps({"brief": "dark garage, keep the hook", "style": "house", "model": "standard",
+                              "takes": [{"name": "Night 1", "lora": "runX", "seed": 3}, {"name": "Night 2", "seed": 4}]}))
+    out = tmp_path / "o"
+    assert cloud_cli.main(["produce", "--item", item["id"], "--takes", str(tf), "--out", str(out), "--timeout-min", "1"]) == 0
+    assert "dark garage, keep the hook" in asked[0] and "Measurements" in asked[1] and len(asked) == 2
+    # first pass: take 1 only; after the revision: both takes, with the revised plan
+    seen = [json.loads(p.read_text())["params"] for p in sorted((tmp_path / "volume").glob("seen-prender-*.json"))]
+    assert [x["plan"]["tracks"][0]["gain_db"] for x in seen] == [0, 2, 2]
+    assert seen[0]["bed"] == seen[1]["bed"] != seen[2]["bed"]     # same vocal layout + seed: the instrumental is reused
+    assert sorted(p.name for p in out.iterdir() if p.suffix == ".mp3") == ["Night 1 (beat).mp3", "Night 1.mp3",
+                                                                            "Night 2 (beat).mp3", "Night 2.mp3"]
+    # the beat was built around the guide with the producer's caption and the LoRA
+    gen = [json.loads(p.read_text()) for p in (tmp_path / "volume").rglob("seen.json")]
+    vol.s3, vol.bucket = FakeS3(), "vol123"
+    st = cloud_cli.build_state(cli["mgr"])
+    rows = [j for j in st["jobs"] if j["mode"] in ("produce", "produce_map")]
+    assert len(rows) == 1                                         # the first pass and the map job are folded away
+    r = rows[0]
+    assert r["title"] == "Night drive" and r["notes"].startswith("Kept") and r["producer"]["by"] == "claude"
+    assert [t["name"] for t in r["takes"]] == ["Night 1", "Night 2"] and "metrics" not in r["takes"][0]
+    assert r["sections"][0]["name"] == "intro" and r["brief"] == "dark garage, keep the hook"
+
+
+def test_produce_without_a_key_uses_the_rules(cli, tmp_path, monkeypatch):
+    cli["rp"].ace = SongAce(tmp_path)
+    vol = cli["vol"]
+    src = tmp_path / "v.wav"
+    src.write_bytes(tiny_wav())
+    item = cloud_cli.library_add(vol, src, "My vocal", "vocal", "upload")
+    monkeypatch.delenv("GLORE_ANTHROPIC_KEY", raising=False)
+    tf = tmp_path / "spec.json"
+    tf.write_text(json.dumps({"brief": "warm", "takes": [{"name": "A", "seed": 1}]}))
+    assert cloud_cli.main(["produce", "--item", item["id"], "--takes", str(tf), "--timeout-min", "1"]) == 0
+    seen = [json.loads(p.read_text())["params"] for p in (tmp_path / "volume").glob("seen-prender-*.json")]
+    assert len(seen) == 1 and seen[0]["plan"]["sections"][0]["name"] == "intro"
+    assert any(t["guide"] for t in seen[0]["plan"]["tracks"])

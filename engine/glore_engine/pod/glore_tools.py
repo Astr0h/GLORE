@@ -244,6 +244,128 @@ def master_to_reference(song, root: Path, work: Path, master: str, pack: str):
         return basic_master(song, SR), None
 
 
+# ---------------------------------------------------------------- the producer (session plans)
+
+BED_BARS = 400.0   # "the whole timeline": bed stems exist wherever the plan plays them
+
+
+def _pdir(root: Path, sid: str) -> Path:
+    d = root / "glore" / "produce" / sid
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def op_pmap(job, root, work, item, p):
+    """p: sid, vocal, music?, bpm, key, style, seed. Listens to the song: saves the dry sources and the song map."""
+    import numpy as np
+    from glore_engine import songmap
+    from glore_engine.separation import separate
+    d = _pdir(root, p["sid"])
+    bpm = float(p["bpm"])
+    dry = load(to_wav(p["vocal"], work / "vocal.wav"))
+    stems = {}
+    if p.get("music"):
+        music_wav = to_wav(p["music"], work / "music.wav")
+        parts = separate(music_wav, work / "orig_stems", model_name="htdemucs")
+        stems = {k: load(v) for k, v in parts.items() if k in ("drums", "bass", "other")}
+    grid = stems.get("drums") if stems else dry
+    bt = drum_beats(grid if grid is not None else dry, bpm)
+    offset = float(bt[0] % (60.0 / bpm)) if len(bt) else 0.0
+    m = songmap.build(dry, SR, bpm, p.get("key"), offset, music=stems or None)
+    save(d / "vocal.wav", dry)
+    bars = {"vocal": m["bars"]}
+    riff = songmap.riff_loop(dry, SR, bpm, p.get("key"), offset, style=p.get("style", "house"), seed=int(p.get("seed", 0)))
+    if riff is not None:
+        save(d / "chopriff.wav", riff)
+        bars["chopriff"] = 4
+    for k in ("bed.drums", "bed.bass", "bed.other", "bed.vox"):
+        bars[k] = BED_BARS
+    for k, v in stems.items():
+        save(d / f"orig.{k}.wav", v)
+        bars[f"orig.{k}"] = m["bars"]
+    meta = {"bpm": bpm, "key": p.get("key"), "offset": offset, "source_bars": bars}
+    (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    (d / "songmap.json").write_text(json.dumps(m), encoding="utf-8")
+    return {"songmap": m, "source_bars": bars, "sid": p["sid"]}
+
+
+def _psources(d: Path, plan: dict, work: Path) -> dict:
+    """The session's sources at the plan's tempo and key (conformed copies are kept for the next pass)."""
+    from glore_engine.session import Source, conform
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    bpm, tr = float(plan["bpm"]), float(plan.get("transpose") or 0)
+    same = abs(bpm - meta["bpm"]) < 0.01 and abs(tr) < 0.01
+    cdir = d if same else d / f"conf_{bpm:g}_{tr:g}"
+    cdir.mkdir(exist_ok=True)
+    out = {}
+    for f in sorted(d.glob("*.wav")):
+        name = f.stem
+        if name.startswith(("bed", "guide")):
+            continue
+        g = cdir / f.name
+        if not g.exists():
+            save(g, conform(load(f), SR, meta["bpm"], bpm, 0.0 if name == "orig.drums" else tr))
+        off = 0.0 if name == "chopriff" else meta["offset"] * meta["bpm"] / bpm
+        out[name] = Source(load(g), off)
+    return out
+
+
+def op_pguide(job, root, work, item, p):
+    """p: sid, plan. Renders what the instrumental will be built around (the lead vocal as arranged)."""
+    from glore_engine import session
+    d = _pdir(root, p["sid"])
+    plan = p["plan"]
+    g = session.render(plan, _psources(d, plan, work), SR, guide_only=True)
+    path = save(d / "guide.wav", g["mix"])
+    return {"guide": str(path), "duration": round(g["mix"].shape[1] / SR, 2), "warnings": g["warnings"]}
+
+
+def op_prender(job, root, work, item, p):
+    """p: sid, plan, bed (the generated take), out_base, master, pack. Renders the session, measures it, masters it."""
+    import numpy as np
+    from glore_engine import producer, session
+    from glore_engine.separation import separate
+    from glore_engine.session import Source
+    from glore_engine.mixing import master as basic_master
+    d = _pdir(root, p["sid"])
+    plan = p["plan"]
+    sources = _psources(d, plan, work)
+    bed_dir = Path(p["bed"]).with_suffix("")          # stems are kept beside the bed for a second pass
+    if not (bed_dir / "drums.wav").exists():
+        parts = separate(to_wav(p["bed"], work / "bed.wav"), work / "bed_stems", model_name="htdemucs")
+        bed_dir.mkdir(parents=True, exist_ok=True)
+        for k, v in parts.items():
+            save(bed_dir / f"{k}.wav", load(v))
+    for k, name in (("drums", "bed.drums"), ("bass", "bed.bass"), ("other", "bed.other"), ("vocals", "bed.vox")):
+        if (bed_dir / f"{k}.wav").exists():
+            sources[name] = Source(load(bed_dir / f"{k}.wav"), 0.0)
+    out = session.render(plan, sources, SR)
+    metrics = producer.measure(out, plan, SR)
+    song = out["mix"]
+    master, mastered_to = p.get("master", "pack"), None
+    if master not in ("none", None):
+        song, mastered_to = master_to_reference(song, root, work, master, p.get("pack", "house"))
+    else:
+        song = basic_master(song, SR)
+    base = Path(p["out_base"])
+    base.parent.mkdir(parents=True, exist_ok=True)
+    wav = save(work / "song.wav", song, "PCM_24")
+    ffmpeg("-i", str(wav), "-c:a", "libmp3lame", "-b:a", "320k", f"{base}.mp3")
+    groups = out.get("groups", {})
+    beat = sum((v for k, v in groups.items() if k != "vocal"), np.zeros_like(out["mix"]))
+    beat = beat * (0.89 / max(1e-6, float(np.max(np.abs(beat)))))
+    ffmpeg("-i", str(save(work / "beat.wav", beat)), "-c:a", "libmp3lame", "-b:a", "320k", f"{base} (beat).mp3")
+    z = Path(f"{base} (stems).zip")
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:
+        zf.write(wav, f"{base.name} - master.wav")
+        for k, v in out["tracks"].items():
+            zf.write(save(work / f"t_{k}.wav", v, "PCM_24"), f"{base.name} - {k}.wav")
+        zf.writestr(f"{base.name} - plan.json", json.dumps(plan, indent=1))
+    (d / "last_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    return {"mp3": f"{base}.mp3", "beat_mp3": f"{base} (beat).mp3", "zip": str(z), "metrics": metrics,
+            "mastered_to": mastered_to, "duration": metrics["length_seconds"]}
+
+
 def op_mixsong(job, root, work, item, p):
     """p: take, vocal, bpm, key, fx, reverb, delay, chops (style or ''), chops_seed, vocal_db, beat_db,
     chops_db, out_base (path without extension), stems (bool)."""
@@ -301,7 +423,7 @@ def op_mixsong(job, root, work, item, p):
     return res
 
 
-OPS = {"arrange": op_arrange, "stems": op_stems, "clean": op_clean, "analyse": op_analyse, "lock": op_lock, "chops": op_chops,
+OPS = {"pmap": op_pmap, "pguide": op_pguide, "prender": op_prender, "arrange": op_arrange, "stems": op_stems, "clean": op_clean, "analyse": op_analyse, "lock": op_lock, "chops": op_chops,
        "mixsong": op_mixsong}
 
 

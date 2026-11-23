@@ -110,3 +110,46 @@ def test_extract_json():
     assert producer._extract_json('Here you go:\n```json\n{"a": {"b": 1}}\n```') == {"a": {"b": 1}}
     with pytest.raises(ValueError):
         producer._extract_json("no json")
+
+
+def test_cloud_tools_map_guide_and_render_for_real(tmp_path, monkeypatch):
+    """The three producer steps as they run on the GPU, on real audio (stem separation faked)."""
+    import importlib.util
+    import soundfile as sf
+    import zipfile
+    from glore_engine import separation
+    spec = importlib.util.spec_from_file_location("glore_tools", Path(__file__).parents[1] / "glore_engine" / "pod" / "glore_tools.py")
+    gt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gt)
+    SR = gt.SR
+    root, work = tmp_path / "vol", tmp_path / "work"
+    work.mkdir()
+    sf.write(tmp_path / "v.wav", V.T, s.SR)
+
+    def fake_separate(src, out_dir, model_name="htdemucs"):
+        x, sr = sf.read(str(src))
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        out = {}
+        for i, k in enumerate(("drums", "bass", "other", "vocals")):
+            sf.write(Path(out_dir) / f"{k}.wav", x * (0.5 if k != "vocals" else 0.1), sr)
+            out[k] = Path(out_dir) / f"{k}.wav"
+        return out
+    monkeypatch.setattr(separation, "separate", fake_separate)
+    r = gt.op_pmap({}, root, work, {}, {"sid": "abc", "vocal": str(tmp_path / "v.wav"), "bpm": s.BPM, "key": "A minor"})
+    assert r["source_bars"]["vocal"] == r["songmap"]["bars"] and r["source_bars"]["chopriff"] == 4
+    plan, how = producer.make_plan(r["songmap"], "", r["source_bars"], "house", api_key="")
+    plan["bpm"] = 126.0                                   # the producer nudges the tempo: sources get conformed
+    g = gt.op_pguide({}, root, work, {}, {"sid": "abc", "plan": plan})
+    guide, _ = sf.read(g["guide"])
+    assert abs(g["duration"] - plan["bars"] * 240 / 126) < 0.1 and not g["warnings"]
+    # a "generated" instrumental as long as the guide
+    t = np.arange(len(guide)) / SR
+    bed = tmp_path / "bed.wav"
+    sf.write(bed, np.stack([0.3 * np.sin(2 * np.pi * 110 * t)] * 2).T, SR)
+    out = gt.op_prender({}, root, work, {}, {"sid": "abc", "plan": plan, "bed": str(bed), "out_base": str(tmp_path / "out" / "Song"),
+                                              "master": "none"})
+    assert Path(out["mp3"]).stat().st_size > 10000 and Path(out["beat_mp3"]).exists()
+    assert abs(out["duration"] - g["duration"]) < 0.1 and not out["metrics"]["engine_warnings"]
+    names = zipfile.ZipFile(out["zip"]).namelist()
+    assert "Song - lead.wav" in names and "Song - plan.json" in names and "Song - master.wav" in names
+    assert (root / "glore" / "produce" / "abc" / "conf_126_0" / "vocal.wav").exists()

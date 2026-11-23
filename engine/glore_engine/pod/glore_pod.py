@@ -17,6 +17,7 @@ and always at GLORE_HARD_CAP_S seconds after it started."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -663,6 +664,84 @@ def run_song_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
             "kind": job.get("kind", "vocal")}
 
 
+def run_produce_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dict:
+    """The producer. Two kinds of job share a session folder (glore/produce/<sid>):
+    phase "map":    {sid, item | upload, kind, bpm?, key?, style, seed}  -> the song map (what the producer plans from)
+    phase "render": {sid, plan, variant, takes: [{name, lora_dir?, trigger?, scale?, seed}], master, pack}
+                    -> the instrumental is generated around the plan's guide, then the plan is rendered."""
+    variant = job.get("variant", "xl_sft")
+    sid = job["sid"]
+    work = root / "glore" / "runs" / job["id"] / "produce"
+    work.mkdir(parents=True, exist_ok=True)
+    pdir = root / "glore" / "produce" / sid
+    if job.get("phase") == "map":
+        ace.ensure(variant, log, status, extras=SONG_EXTRAS)
+        status.update(phase="preparing", progress=0.1, message="Listening: vocal, stems, tempo, key")
+        src = job.get("upload") or library_item(root, job["item"])["file"]
+        pj = work / "prep.json"
+        pj.write_text(json.dumps({"input": str(root / src), "kind": job.get("kind", "vocal"), "work": str(work / "prep")}),
+                      encoding="utf-8")
+        a = _run_tool(ace, "glore_song.py", ["prep", str(pj)], log)
+        status.update(progress=0.5, message="Mapping the song: sections, hook, melody, phrases")
+        r = _tool(ace, "pmap", root, work / "map", log, params={
+            "sid": sid, "vocal": a["vocal"], "music": a.get("music"), "bpm": job.get("bpm") or a["bpm"],
+            "key": job.get("key") or a["key"], "style": job.get("style", "house"), "seed": int(job.get("seed", 0))})
+        shutil.rmtree(work, ignore_errors=True)
+        return {**r, "kind": job.get("kind", "vocal")}
+
+    ace.ensure(variant, log, status, extras=SONG_EXTRAS)
+    plan = job["plan"]
+    inference = VARIANT_INFERENCE[variant]
+    out_dir = root / "outputs" / job["id"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    status.update(phase="preparing", progress=0.05, message="Laying out the arrangement")
+    g = _tool(ace, "pguide", root, work / "guide", log, params={"sid": sid, "plan": plan})
+    meta = json.loads((pdir / "meta.json").read_text(encoding="utf-8"))
+    caption = (plan.get("bed") or {}).get("caption") or plan.get("caption") or "house"
+    takes, results = job.get("takes") or [{}], []
+    for i, t in enumerate(takes):
+        name = re.sub(r"[^A-Za-z0-9 ._()+-]", "", t.get("name") or f"take {i + 1}").strip() or f"take {i + 1}"
+        seed = int(t.get("seed", 0))
+        sig = hashlib.sha256(json.dumps([job.get("guide_sig"), caption, t.get("lora_dir"), t.get("scale"), seed,
+                                         variant]).encode()).hexdigest()[:16]
+        bed = pdir / f"bed_{sig}.wav"
+        try:
+            if not bed.exists():   # a revision that keeps the vocal where it was reuses the instrumental
+                status.update(phase="generating", progress=0.1 + 0.8 * i / len(takes),
+                              message=f"Building the instrumental around your vocal ({i + 1}/{len(takes)})")
+                tw = work / f"take{i + 1}"
+                tw.mkdir(parents=True, exist_ok=True)
+                lora = ({"path": str(root / t["lora_dir"]), "trigger": t.get("trigger"), "scale": float(t.get("scale", 1.0))}
+                        if t.get("lora_dir") else None)
+                gjob = {"ace_dir": str(ace.dir), "out_dir": str(tw), "variant": variant, "caption": caption, "lora": lora,
+                        "bpm": plan["bpm"], "key": meta.get("key"), "duration": g["duration"], "seed": seed, "count": 1,
+                        "steps": inference["steps"], "shift": inference["shift"], "offload": False, "lm": None,
+                        "mode": "complete", "src_audio": g["guide"], "tracks": ["drums", "bass", "keyboard", "synth"],
+                        "guidance": float(t.get("guidance", 7.0)), "rewrite_caption": False}
+                (tw / "job.json").write_text(json.dumps(gjob), encoding="utf-8")
+                made = _run_tool(ace, "glore_generate.py", [str(tw / "job.json")], log)
+                shutil.move(made["files"][0]["path"], bed)
+                shutil.rmtree(tw, ignore_errors=True)
+            status.update(phase="generating", progress=0.1 + 0.8 * (i + 0.7) / len(takes),
+                          message=f"Producing {name}: arranging, effects, mix, master")
+            m = _tool(ace, "prender", root, work / f"render{i + 1}", log, params={
+                "sid": sid, "plan": plan, "bed": str(bed), "out_base": str(out_dir / name),
+                "master": job.get("master", "pack"), "pack": job.get("pack", "house")})
+            rel = lambda f: str(Path(f).relative_to(root)).replace("\\", "/")
+            results.append({"name": name, "mp3": rel(m["mp3"]), "beat_mp3": rel(m["beat_mp3"]), "zip": rel(m["zip"]),
+                            "mastered_to": m.get("mastered_to"), "seed": seed, "metrics": m["metrics"]})
+        except RuntimeError as e:
+            results.append({"name": name, "error": str(e)})
+    shutil.rmtree(work, ignore_errors=True)
+    if not any("mp3" in r for r in results):
+        raise RuntimeError(results[0].get("error") or "nothing rendered")
+    return {"takes": results, "variant": variant, "bpm": plan["bpm"], "key": meta.get("key"),
+            "duration": next(r["metrics"]["length_seconds"] for r in results if "metrics" in r),
+            "gh_run": job.get("gh_run"), "sections": plan.get("sections"), "title": plan.get("title"),
+            "notes": plan.get("notes"), "producer": job.get("producer"), "brief": job.get("brief"),
+            "replaces": job.get("replaces"), "kind": job.get("kind", "vocal")}
+
+
 def next_job(queue: Path) -> Path | None:
     jobs = sorted(queue.glob("*.json"), key=lambda p: p.stat().st_mtime)
     return jobs[0] if jobs else None
@@ -752,6 +831,8 @@ def process_job(path: Path, root: Path, ace: Ace, state: dict) -> dict | None:
                 result = run_generate_job(job, root, ace, log, status)
             elif job["mode"] == "song":
                 result = run_song_job(job, root, ace, log, status)
+            elif job["mode"] in ("produce", "produce_map"):
+                result = run_produce_job(job, root, ace, log, status)
             elif job["mode"] == "tool":
                 result = run_tool_job(job, root, ace, log, status)
             else:

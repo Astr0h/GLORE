@@ -159,7 +159,7 @@ def _start_or_reuse_inner(mgr: CloudManager, kind: str, hard_cap_s: float, idle_
 
 
 ENGINE_MODULES = ("__init__", "audio_io", "analysis", "separation", "cleanup", "vocal_lock", "chops", "fx", "mixing",
-                  "structure")  # synced to the pod
+                  "structure", "session", "fxrack", "songmap", "producer")  # synced to the pod
 
 
 def sync_scripts(vol: cloud.Volume) -> None:
@@ -598,6 +598,98 @@ def cmd_song(a) -> dict:
     return {"job": job_id}
 
 
+def _queue(vol: cloud.Volume, mgr: CloudManager, job: dict, hard_cap_s: float = 5400) -> dict:
+    vol.put_bytes(f"glore/queue/{job['id']}.json", json.dumps(job).encode())
+    return _start_or_reuse(mgr, "train", hard_cap_s, 10, {"job": job["id"]}, gpus=work_gpus())
+
+
+def _done(vol: cloud.Volume, job_id: str, timeout_min: float, what: str) -> dict:
+    st = wait_job(vol, job_id, timeout_min)
+    if st.get("phase") != "done":
+        raise CloudError(f"{what} failed: {st.get('error') or st.get('message') or st.get('phase')}")
+    return st.get("result") or {}
+
+
+def cmd_produce(a) -> dict:
+    """The producer: listen to the song, let Claude plan the production from the brief, build it, measure it,
+    let Claude revise once, deliver. --takes is a JSON file: {"brief", "style", "model", "takes": [{name, lora?, scale?, seed}]}"""
+    from . import producer
+    spec = json.loads(Path(a.takes).read_text(encoding="utf-8"))
+    if isinstance(spec, list):
+        spec = {"takes": spec}
+    takes = spec.get("takes") or [{"name": "produced", "seed": 0}]
+    brief, style, model = str(spec.get("brief") or "").strip(), spec.get("style") or "house", spec.get("model") or "standard"
+    key = os.environ.get("GLORE_WEB_KEY", "")
+    mgr = manager()
+    settle_ledger(mgr)
+    vol = mgr.volume()
+    item_id = a.item
+    if a.upload:
+        if not key:
+            raise CloudError("GLORE_WEB_KEY is needed to decrypt uploads")
+        with tempfile.TemporaryDirectory() as tmp:
+            name = (a.name or "upload").replace("_", " ")
+            f = Path(tmp) / safe_file(name)
+            f.write_bytes(decrypt_upload(take_upload(a.upload), key))
+            item_id = library_add(vol, f, name, a.kind, "upload")["id"]
+    if not item_id:
+        raise CloudError("Give --upload (from GLORE Web) or --item (from your library)")
+    item = library_get(vol, item_id)
+    for t in takes:
+        if t.get("lora"):
+            t["lora_dir"] = resolve_lora(vol, t.get("pack", style), t["lora"])
+            t.setdefault("trigger", f"glore_{t.get('pack', style)}")
+    sync_scripts(vol)
+    sid = uuid.uuid4().hex[:10]
+    run = os.environ.get("GITHUB_RUN_ID")
+
+    # 1. ears
+    map_id = uuid.uuid4().hex[:10]
+    row = _queue(vol, mgr, {"id": map_id, "mode": "produce_map", "phase": "map", "sid": sid, "item": item_id,
+                            "kind": a.kind, "variant": a.variant, "bpm": a.bpm or item.get("bpm"),
+                            "key": (a.key or "").replace("_", " ") or item.get("key"), "style": style,
+                            "seed": int(takes[0].get("seed", 0))})
+    print(json.dumps({"session": sid, "pod": row["pod_id"], "gpu": row.get("gpu")}), flush=True)
+    r = _done(vol, map_id, a.timeout_min, "Listening to the song")
+    songmap, source_bars = r["songmap"], r["source_bars"]
+    print(f"  song map: {songmap['bars']} bars at {songmap['bpm']} BPM, {songmap.get('key')}, "
+          f"{len(songmap['sections'])} sections, {songmap['delivery']['style']}", flush=True)
+
+    # 2. brain
+    plan, how = producer.make_plan(songmap, brief, source_bars, style, model=model, seed=int(takes[0].get("seed", 0)))
+    print(f"  plan by {how['by']}" + (f" ({how.get('model')})" if how.get("model") else "")
+          + (f"; AI producer unavailable: {how['error']}" if how.get("error") else "") + f": {plan.get('title', '')}", flush=True)
+    for w in how.get("warnings", [])[:10]:
+        print(f"    note: {w}")
+    vol.put_bytes(f"glore/produce/{sid}/plan1.json", json.dumps({"plan": plan, "how": how, "brief": brief}).encode())
+
+    def render(plan, takes, how, replaces=None) -> tuple[str, dict]:
+        jid = uuid.uuid4().hex[:10]
+        _queue(vol, mgr, {"id": jid, "mode": "produce", "phase": "render", "sid": sid, "plan": plan, "variant": a.variant,
+                          "takes": takes, "master": a.master, "pack": style, "kind": a.kind, "gh_run": run,
+                          "guide_sig": producer.guide_signature(plan), "brief": brief, "replaces": replaces,
+                          "producer": {k: how.get(k) for k in ("by", "model", "error", "verdict") if how.get(k)}})
+        return jid, _done(vol, jid, a.timeout_min, "Producing the song")
+
+    # 3. hands, 4. a second look
+    jid, res = render(plan, takes[:1] if how["by"] == "claude" and not a.no_revise else takes, how)
+    if how["by"] == "claude" and not a.no_revise:
+        metrics = next((t["metrics"] for t in res["takes"] if t.get("metrics")), {})
+        new, rhow = producer.revise(plan, metrics, source_bars, model=model)
+        print(f"  second look: {rhow.get('verdict') or rhow.get('error') or 'skipped'}", flush=True)
+        if new is not None:
+            vol.put_bytes(f"glore/produce/{sid}/plan2.json", json.dumps({"plan": new, "how": rhow}).encode())
+            jid, res = render(new, takes, {**how, "verdict": "revised after measuring the first pass"}, replaces=jid)
+        elif len(takes) > 1:
+            jid2, res2 = render(plan, takes[1:], how)
+            print(json.dumps({"job": jid2, "takes": [t.get("name") for t in res2["takes"]]}))
+    print(json.dumps({"job": jid, "title": res.get("title"), "notes": res.get("notes"),
+                      "takes": [t.get("name") for t in res["takes"]]}, indent=2))
+    if a.out:
+        cmd_fetch(argparse.Namespace(job=jid, out=a.out, wait=False, timeout_min=1))
+    return {"job": jid, "session": sid}
+
+
 TOOL_OPS = ("stems", "clean", "analyse", "lock", "chops")
 
 
@@ -819,17 +911,21 @@ def build_state(mgr: CloudManager, max_jobs: int = 25) -> dict:
         row = {k: st.get(k) for k in ("job", "mode", "phase", "message", "progress", "epoch", "epochs", "loss",
                                        "eta_s", "started", "heartbeat", "gpu", "error")}
         res = st.get("result") or {}
-        if st.get("mode") in ("generate", "song"):
-            row["takes"] = [dict(t) for t in res.get("takes", [])]
+        if st.get("mode") in ("generate", "song", "produce"):
+            row["takes"] = [{k: v for k, v in t.items() if k != "metrics"} for t in res.get("takes", [])]
             row["gh_run"] = res.get("gh_run")
-            if st.get("mode") == "song":
-                row.update({k: res.get(k) for k in ("bpm", "key", "duration", "kind")})
+            if st.get("mode") in ("song", "produce"):
+                row.update({k: res.get(k) for k in ("bpm", "key", "duration", "kind", "sections", "title", "notes",
+                                                     "producer", "brief", "replaces") if res.get(k) is not None})
         elif st.get("mode") == "tool":
             row.update({"op": res.get("op"), "item": res.get("item"),
                         "made": [i.get("id") for i in res.get("items", [])]})
         elif st.get("mode") == "train":
             row["run_id"] = res.get("lora_dir", "").split("/")[2] if res.get("lora_dir") else None
         jobs.append(row)
+    replaced = {r.get("replaces") for r in jobs if r.get("replaces")}
+    jobs = [r for r in jobs if r["job"] not in replaced
+            and not (r.get("mode") == "produce_map" and r.get("phase") == "done")]
     jobs.sort(key=lambda r: r.get("started") or 0, reverse=True)
     jobs = jobs[:max_jobs]
     for row in [j for j in jobs if j.get("takes")][:MEDIA_TAKE_JOBS]:
@@ -1031,6 +1127,20 @@ def main(argv: list[str] | None = None) -> int:
     lb.add_argument("--delete")
     lb.add_argument("--rename")
     lb.add_argument("--to", default="")
+    pd = sub.add_parser("produce")
+    pd.add_argument("--upload")
+    pd.add_argument("--item")
+    pd.add_argument("--name", default="")
+    pd.add_argument("--kind", default="vocal")
+    pd.add_argument("--takes", required=True, help='JSON: {"brief", "style", "model", "takes": [...]}')
+    pd.add_argument("--variant", default="xl_sft")
+    pd.add_argument("--bpm", type=float)
+    pd.add_argument("--key")
+    pd.add_argument("--master", default="pack")
+    pd.add_argument("--no-revise", action="store_true")
+    pd.add_argument("--wait", action="store_true")   # always waits; accepted for symmetry with song
+    pd.add_argument("--out", default="")
+    pd.add_argument("--timeout-min", type=float, default=60)
     so = sub.add_parser("song")
     so.add_argument("--upload", help="path in the glore-uploads branch (from GLORE Web)")
     so.add_argument("--source", help="or: a file already on the volume")
@@ -1072,7 +1182,8 @@ def main(argv: list[str] | None = None) -> int:
         {"train": cmd_train, "generate": cmd_generate, "fetch": cmd_fetch, "status": cmd_status,
          "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
                 "import": cmd_import, "link": cmd_link, "library": cmd_library,
-                "tool": cmd_tool, "queue": cmd_queue, "probe": cmd_probe, "gpus": cmd_gpus}[a.cmd](a)
+                "tool": cmd_tool, "queue": cmd_queue, "probe": cmd_probe, "gpus": cmd_gpus,
+                "produce": cmd_produce}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

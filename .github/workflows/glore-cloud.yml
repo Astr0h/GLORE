@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "status | check | du | grow | train | generate | song | import | link | library | tool | fetch | loras | log | stop  (every run also refreshes GLORE Web)"
+        description: "status | check | du | grow | train | generate | song | produce | import | link | library | tool | fetch | loras | log | stop  (every run also refreshes GLORE Web)"
         required: true
         default: status
       args:
@@ -44,6 +44,7 @@ jobs:
       GLORE_GPU: ${{ secrets.GLORE_GPU }}
       GLORE_MONTHLY_LIMIT: ${{ secrets.GLORE_MONTHLY_LIMIT }}
       GLORE_WEB_KEY: ${{ secrets.GLORE_WEB_KEY }}
+      GLORE_ANTHROPIC_KEY: ${{ secrets.GLORE_ANTHROPIC_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,6 +54,7 @@ jobs:
         run: |
           pip install --quiet "boto3>=1.35" "cryptography>=42" imageio-ffmpeg
           if [ "${{ inputs.command }}" = "link" ]; then pip install --quiet -U "yt-dlp[default]" imageio-ffmpeg; fi
+          if [ "${{ inputs.command }}" = "produce" ]; then pip install --quiet "numpy>=1.26" "pedalboard>=0.9.8"; fi
       - name: Run
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -63,7 +65,7 @@ jobs:
           set -eo pipefail
           export GLORE_HOME="$RUNNER_TEMP/glore-home"
           extra=()
-          if [ "$CMD" = "generate" ] || [ "$CMD" = "song" ]; then
+          if [ "$CMD" = "generate" ] || [ "$CMD" = "song" ] || [ "$CMD" = "produce" ]; then
             printf '%s' "$TAKES" > "$RUNNER_TEMP/takes.json"
             extra=(--takes "$RUNNER_TEMP/takes.json" --out "$GITHUB_WORKSPACE/out")
           fi
@@ -83,7 +85,7 @@ jobs:
           # several runs can finish at once: retry, last one wins (they all publish the same volume)
           for i in 1 2 3; do git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" glore-state && break; sleep $((i * 3)); done
       - name: Keep the takes
-        if: always() && (inputs.command == 'generate' || inputs.command == 'song' || inputs.command == 'fetch')
+        if: always() && (inputs.command == 'generate' || inputs.command == 'song' || inputs.command == 'produce' || inputs.command == 'fetch')
         uses: actions/upload-artifact@v4
         with:
           name: glore-takes

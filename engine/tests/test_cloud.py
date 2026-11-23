@@ -76,6 +76,14 @@ class FakeVolume:
     def delete(self, key):
         self._p(key).unlink(missing_ok=True)
 
+    def delete_many(self, keys, report=None):
+        for k in keys:
+            self.delete(k)
+        return len(keys)
+
+    def list_sizes(self, prefix):
+        return [(k, self._p(k).stat().st_size) for k in self.list_keys(prefix)]
+
     def tail(self, key, n=4000):
         b = self.get_bytes(key) or b""
         return b[-n:].decode()

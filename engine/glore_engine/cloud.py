@@ -414,6 +414,21 @@ class Volume:
         except Exception as e:
             raise CloudError(_s3_msg(e)) from None
 
+    def delete_many(self, keys: list[str], report=None) -> int:
+        """Delete in batches of 1000 (one request each); falls back to one at a time."""
+        done = 0
+        for i in range(0, len(keys), 1000):
+            batch = keys[i:i + 1000]
+            try:
+                self.s3.delete_objects(Bucket=self.bucket, Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True})
+            except Exception:
+                for k in batch:
+                    self.delete(k)
+            done += len(batch)
+            if report:
+                report(done)
+        return done
+
     def delete(self, key: str) -> None:
         try:
             self.s3.delete_object(Bucket=self.bucket, Key=key)

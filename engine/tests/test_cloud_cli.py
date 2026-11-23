@@ -1,5 +1,6 @@
 """The PC-free cloud CLI (GitHub Actions): train from the volume, generate on the pod, ledger on the volume."""
 import json
+import time
 from pathlib import Path
 import sys
 
@@ -494,3 +495,19 @@ def test_produce_without_a_key_uses_the_rules(cli, tmp_path, monkeypatch):
     seen = [json.loads(p.read_text())["params"] for p in (tmp_path / "volume").glob("seen-prender-*.json")]
     assert len(seen) == 1 and seen[0]["plan"]["sections"][0]["name"] == "intro"
     assert any(t["guide"] for t in seen[0]["plan"]["tracks"])
+
+
+def test_clean_frees_scratch_but_keeps_your_work(cli):
+    vol = cli["vol"]
+    keep = ["library/abc/item.json", "library/abc/a.flac", "outputs/j1/a.mp3", "loras/house/r/final/adapter_model.safetensors",
+            "glore/runs/old/status.json", "glore/produce/s1/plan1.json", "glore/runs/live/song/take.wav"]
+    junk = ["glore/runs/old/song/take.wav", "glore/produce/s1/bed_x.wav", "glore/produce/s1/conf_1/vocal.wav", ".cache/uv/a/b.whl"]
+    for k in keep + junk:
+        vol.put_bytes(k, b"x" * 100)
+    vol.put_bytes("glore/runs/old/status.json", json.dumps({"phase": "done"}).encode())
+    vol.put_bytes("glore/runs/live/status.json", json.dumps({"phase": "generating", "updated": time.time()}).encode())
+    assert cloud_cli.main(["clean"]) == 0
+    left = set(vol.list_keys(""))
+    assert set(keep) <= left and ".cache/uv/a/b.whl" in left and not (set(junk[:3]) & left)
+    assert cloud_cli.main(["clean", "--cache"]) == 0
+    assert ".cache/uv/a/b.whl" not in set(vol.list_keys(""))

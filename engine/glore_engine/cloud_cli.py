@@ -507,6 +507,54 @@ def cmd_gpus(a) -> dict:
     return {"gpus": rows}
 
 
+def _active_jobs(vol: cloud.Volume) -> set[str]:
+    active = set()
+    for k in vol.list_keys("glore/queue/"):
+        if k.endswith(".json"):
+            active.add(Path(k).stem.lstrip(".").split(".")[0])
+    for k in vol.list_keys("glore/runs/"):
+        if k.endswith("/status.json"):
+            st = json.loads(vol.get_bytes(k) or b"{}")
+            if st.get("phase") not in ("done", "error", "stopped", None) and time.time() - float(st.get("updated") or 0) < 3 * 3600:
+                active.add(k.split("/")[2])
+    return active
+
+
+def clean_scratch(vol: cloud.Volume, cache: bool = False, report=print) -> dict:
+    """Free space by deleting what can be rebuilt: working files of finished runs and producer sessions
+    (their small .json records stay), and optionally the package download cache. Never touches the
+    library, outputs, LoRAs, datasets or models."""
+    active = _active_jobs(vol)
+    sessions_live = set()
+    for k in vol.list_keys("glore/queue/"):
+        raw = vol.get_bytes(k) if k.endswith(".json") else None
+        if raw:
+            sid = json.loads(raw).get("sid")
+            if sid:
+                sessions_live.add(sid)
+    doomed, freed = [], 0
+    for prefix, keep_live in (("glore/runs/", active), ("glore/produce/", sessions_live)):
+        for k, n in vol.list_sizes(prefix):
+            parts = k.split("/")
+            if len(parts) < 4 or parts[2] in keep_live or (k.endswith(".json") and len(parts) == 4):
+                continue
+            doomed.append(k)
+            freed += n
+    if cache:
+        for k, n in vol.list_sizes(".cache/uv/"):
+            doomed.append(k)
+            freed += n
+    report(f"deleting {len(doomed)} files, {freed / 2 ** 30:.2f} GB")
+    vol.delete_many(doomed, report=lambda d: report(f"  {d}/{len(doomed)}") if d % 20000 == 0 else None)
+    return {"files": len(doomed), "gb": round(freed / 2 ** 30, 2)}
+
+
+def cmd_clean(a) -> dict:
+    res = clean_scratch(manager().volume(), cache=a.cache)
+    print(json.dumps(res))
+    return res
+
+
 def cmd_show(a) -> dict:
     """Print a (text) file from the volume, e.g. a producer plan."""
     raw = manager().volume().get_bytes(a.key)
@@ -694,6 +742,11 @@ def cmd_produce(a) -> dict:
         elif len(takes) > 1:
             jid2, res2 = render(plan, takes[1:], how)
             print(json.dumps({"job": jid2, "takes": [t.get("name") for t in res2["takes"]]}))
+    try:  # the session's working audio (beds, stems, conformed copies) is rebuilt per song: free it now
+        junk = [k for k in vol.list_keys(f"glore/produce/{sid}/") if not k.endswith(".json")]
+        vol.delete_many(junk)
+    except CloudError as e:
+        print(f"  (couldn't tidy the session away: {e})")
     print(json.dumps({"job": jid, "title": res.get("title"), "notes": res.get("notes"),
                       "takes": [t.get("name") for t in res["takes"]]}, indent=2))
     if a.out:
@@ -1132,6 +1185,8 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--key")
     pr.add_argument("--days", type=float, default=7)
     sub.add_parser("gpus")
+    cl = sub.add_parser("clean")
+    cl.add_argument("--cache", action="store_true", help="also the package download cache (.cache/uv)")
     sh = sub.add_parser("show")
     sh.add_argument("--key", required=True)
     qu = sub.add_parser("queue")
@@ -1196,7 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
          "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
                 "import": cmd_import, "link": cmd_link, "library": cmd_library,
                 "tool": cmd_tool, "queue": cmd_queue, "probe": cmd_probe, "gpus": cmd_gpus,
-                "produce": cmd_produce, "show": cmd_show}[a.cmd](a)
+                "produce": cmd_produce, "show": cmd_show, "clean": cmd_clean}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

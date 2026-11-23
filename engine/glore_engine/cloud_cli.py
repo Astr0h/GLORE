@@ -856,7 +856,7 @@ def cmd_du(a) -> dict:
     depth = int(a.depth)
     sizes: dict[str, int] = {}
     total = 0
-    prefixes = [a.prefix] if a.prefix else ["tensors/", "datasets/", "loras/", "outputs/", "glore/",
+    prefixes = [a.prefix] if a.prefix else ["tensors/", "datasets/", "loras/", "outputs/", "glore/", "library/", "references/", "models/",
                                               "ace/checkpoints/", ".cache/hf/"]
     for k, n in (kn for p in prefixes for kn in vol.list_sizes(p)):
         total += n

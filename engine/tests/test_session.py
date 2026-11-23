@@ -67,6 +67,12 @@ def test_guide_is_only_the_marked_tracks_dry():
     p["tracks"][0]["fx"] = [{"type": "reverb", "mix": 0.9}]
     g = session.render(p, SOURCES, SR, guide_only=True)
     assert list(g["tracks"]) == ["lead"] and rms(g["mix"][:, 13 * BAR:]) < 1e-5   # no reverb tail in the guide
+    p["tracks"].append({**p["tracks"][1], "id": "kit", "clips": [{"at": 0, "src": "kit.kick", "from": 0, "bars": 4, "gain_db": 0, "fx": []},
+                                                             {"at": 0, "src": "bed.bass", "from": 0, "bars": 4, "gain_db": 0, "fx": []}]})
+    from glore_engine import fxrack
+    g = session.render(p, {**SOURCES, "kit.kick": Source(fxrack.make_kit("house", 16, SR, BPM)["kick"])}, SR, guide_only=True)
+    assert list(g["tracks"]) == ["lead", "kit"] and rms(g["tracks"]["kit"][:, :BAR]) > 0.01   # the drum machine is in the guide
+    assert abs(rms(g["tracks"]["kit"]) - rms(fxrack.make_kit("house", 16, SR, BPM)["kick"][:, :4 * BAR]) / 2) < 0.01  # ...but not the bass
 
 
 def test_loops_stutters_and_synths():

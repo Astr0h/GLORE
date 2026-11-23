@@ -40,12 +40,32 @@ A track holds clips. A clip plays `bars` of a source, starting at source bar `fr
 {sources}
 - "synth:riser", "synth:snare_roll" (builds: end them exactly where the next section starts), "synth:noise_sweep", \
 "synth:downlifter", "synth:impact", "synth:sub_drop" (start them on a downbeat): transition sounds of any length.
-The "bed.*" stems are the new instrumental, generated to fit your arrangement: the model hears your guide tracks \
-(every track with "guide": true - the lead vocal as you arranged it) and builds the beat around them, over the whole \
-output timeline, aligned bar for bar (bed bar N = output bar N; normally at == from). You shape the bed with \
+The "bed.*" stems are the new instrumental (bass, chords and synths - no drums: the drums are your kit), generated \
+to fit your arrangement: the model hears the lead vocal (tracks with "guide": true) and your kit clips exactly as you \
+arranged them, and plays bass and chords around them over the whole output timeline, aligned bar for bar (bed bar N = \
+output bar N; normally at == from). Where your kit drops out, the bed will tend to thin out too. You shape the bed with \
 "bed": {{"caption": "..."}}: comma-separated tags for genre, mood, drums, bass, instruments, texture. It is \
 generated once, with one sound all the way through - the contrast between sections is YOUR job: mute stems, filter \
-them, bring the drums in late, strip to bass and vocal, loop a bar, reuse the drop's drums under an earlier section.
+them, bring the drums in late, strip to bass and vocal, loop a bar. Changing the lead's or the kit's clips in a \
+revision rebuilds the bed.
+
+The "kit.*" sources are a drum machine locked to the grid over the whole timeline (kit.kick, kit.clap, kit.hats, \
+kit.perc, or kit.full for all four), in the pack's style. They are the only drums: build the whole groove from them, part by part. Put kit tracks in group "music" with \
+role "drums".
+All sources are level-matched (vocal, bed and kit sit together at gain 0), so gain_db is a real mix decision: 0 is \
+"at full level", -6 clearly back, -12 background.
+
+# What makes it sound like a record in this style
+{style_guide}
+- Every section with energy 0.7 or more has the full kit (kick, clap, hats) and unfiltered bass, start to finish. \
+A drop is the fullest, loudest part of the song: all drums, bass, music wide open, and the hook or chops on top.
+- Quieter sections keep a pulse (hats or a filtered kick) unless it is a deliberate break of 1-4 bars. Do not \
+high-pass or bury the drums for whole verses; thin them instead (drop the clap, or the kick, not everything).
+- Transition sounds are seasoning: at most one riser or snare_roll into a section and one impact on its downbeat, \
+at their default level or lower. Never leave them as the loudest thing.
+- Do not layer pitch-shifted copies of the lead for whole sections (octave_up / pitch on long clips sounds synthetic). \
+Pitch and vocoder effects are for short moments. Vocoder notes must come from the map's sung_notes pitch classes.
+- "bed": {{"caption": ...}} is required: describe the instrumental richly (genre, drums, bass, chords, mood).
 
 # Rules that keep it musical
 - Vocal clips of a bar or more must keep (at - from) a whole number of bars, so words stay on the beat. Cut at phrase \
@@ -85,7 +105,8 @@ Write it compactly: no indentation, leave out any field that is at its default (
   {{"id": "lead", "group": "vocal", "guide": true, "gain_db": 0, "sends": {{"reverb": 0.15, "delay": 0.05}},
     "fx": [...], "clips": [{{"at": 8, "src": "vocal", "from": 0, "bars": 16, "fx": [...], "gain_db": 0,
                               "fade_in": 0, "fade_out": 0}}]}},
-  {{"id": "drums", "group": "music", "role": "drums", "clips": [...]}},
+  {{"id": "kick", "group": "music", "role": "drums", "clips": [{{"at": 4, "src": "kit.kick", "bars": 92}}]}},
+  {{"id": "clap", "group": "music", "role": "drums", "clips": [...]}}, {{"id": "hats", "group": "music", "role": "drums", "clips": [...]}},
   {{"id": "bass", "group": "music", "role": "bass", "clips": [...]}},
   {{"id": "music", "group": "music", "clips": [...]}},
   {{"id": "chops", "group": "chops", "sends": {{"delay": 0.2}}, "clips": [...]}},
@@ -96,7 +117,8 @@ Write it compactly: no indentation, leave out any field that is at its default (
 group is one of vocal, music, chops, fx. role "drums" / "bass" on the tracks carrying those (the kick ducks the rest). \
 Tracks in group "music" duck to the kick and make room for the vocal automatically."""
 
-REVISE = """Here is the plan you wrote, and measurements of how it rendered. Fix real problems only: a section \
+REVISE = """Here is the plan you wrote, and measurements of how it rendered. "problems" lists what the engine \
+found wrong: fix every one. Then fix other real problems only: a section \
 whose loudness doesn't match its energy, a lead that is buried (vocal well below music) or far too loud, dead air, \
 a muddy low end (low share too high) or a thin one, vocal clips flagged off the grid, things the engine skipped. \
 Changing the lead vocal's clips forces the whole instrumental to be rebuilt, so only do that if it is the problem.
@@ -106,11 +128,29 @@ If it is good, reply {"ok": true}. Otherwise reply with the full corrected plan 
 def describe_sources(source_bars: dict[str, float]) -> str:
     notes = {"vocal": "the lead vocal, dry, on its own bar grid (see the map)",
              "chopriff": "a ready-made vocal-chop riff from the song's own melody, loopable",
-             "bed.drums": "new instrumental: drums", "bed.bass": "new instrumental: bass",
+             "bed.bass": "new instrumental: bass",
              "bed.other": "new instrumental: chords, synths, keys", "bed.vox": "the model's own vocal-like textures (use low, in gaps)",
+             "kit.full": "drum machine: kick, clap, hats and perc together, on the grid",
+             "kit.kick": "drum machine: kick", "kit.clap": "drum machine: clap / snare",
+             "kit.hats": "drum machine: hats", "kit.perc": "drum machine: shaker / percussion",
              "orig.drums": "the ORIGINAL song's drums (same bar grid as vocal)", "orig.bass": "the original's bass",
              "orig.other": "the original's instruments"}
     return "\n".join(f'- "{k}": {v:g} bars. {notes.get(k, "")}'.rstrip() for k, v in source_bars.items())
+
+
+STYLE_GUIDE = {
+    "house": "- House: four-on-the-floor kick on every beat, clap on 2 and 4, open hats on the offbeats, a rolling bass "
+             "that ducks to the kick, chords or piano stabs, 120-130 BPM feel. Long builds, clear drops, DJ-friendly "
+             "intro and outro with drums.",
+    "rnb": "- R&B / rap: half-time feel, heavy kick and 808 bass, crisp snare on 3, rolling hats, lots of space for the "
+           "vocal, lush chords. No four-on-the-floor.",
+    "gospel": "- Gospel / soul: live-feeling drums, warm bass, organ and piano carrying the chords, the vocal and "
+              "stacked harmonies in front, lifts into each chorus rather than drops.",
+}
+
+
+def system_prompt(source_bars: dict[str, float], style: str) -> str:
+    return SYSTEM.format(sources=describe_sources(source_bars), style_guide=STYLE_GUIDE.get(style, STYLE_GUIDE["house"]))
 
 
 def _extract_json(text: str) -> dict:
@@ -171,10 +211,12 @@ def make_plan(songmap: dict, brief: str, source_bars: dict[str, float], style: s
         user = (f"Brief from the artist: {brief or 'make it sound like a finished record in this style'}\n"
                 f"Style pack: {style}\n\nSong map (bars on the vocal's grid):\n{json.dumps(songmap)}\n")
         try:
-            raw, usage = ask(SYSTEM.format(sources=describe_sources(source_bars)), user, mid, api_key)
+            raw, usage = ask(system_prompt(source_bars, style), user, mid, api_key)
             plan, w = session.clean_plan(raw, source_bars)
             if not plan["tracks"] or not any(t["guide"] for t in plan["tracks"]):
                 raise RuntimeError("the plan had no lead vocal track to build around")
+            added = session.ensure_backbone(plan, style)
+            w += [f"added a full drum kit to {n} (it had none)" for n in added]
             how = {"by": "claude", "model": mid, "usage": usage, "warnings": w}
         except Exception as e:
             how["error"] = str(e)
@@ -182,11 +224,14 @@ def make_plan(songmap: dict, brief: str, source_bars: dict[str, float], style: s
     if plan is None:
         plan, w = session.clean_plan(default_plan(songmap, brief, style, source_bars, seed), source_bars)
         how["warnings"] = w
+    plan["style"] = style
+    if not (plan.get("bed") or {}).get("caption"):
+        plan["bed"] = {"caption": ", ".join(x for x in (brief.strip(), CAPTIONS.get(style, CAPTIONS["house"])) if x)}
     return plan, how
 
 
 def revise(plan: dict, metrics: dict, source_bars: dict[str, float], model: str = "standard",
-           api_key: str | None = None) -> tuple[dict | None, dict]:
+           api_key: str | None = None, style: str = "house") -> tuple[dict | None, dict]:
     """One critique pass. Returns (new cleaned plan or None if it's fine / unavailable, how)."""
     api_key = api_key if api_key is not None else os.environ.get("GLORE_ANTHROPIC_KEY", "")
     if not api_key:
@@ -194,7 +239,7 @@ def revise(plan: dict, metrics: dict, source_bars: dict[str, float], model: str 
     mid = MODELS.get(model, model)
     user = f"{REVISE}\n\nPlan:\n{json.dumps(plan)}\n\nMeasurements:\n{json.dumps(metrics)}"
     try:
-        raw, usage = ask(SYSTEM.format(sources=describe_sources(source_bars)), user, mid, api_key)
+        raw, usage = ask(system_prompt(source_bars, style), user, mid, api_key)
     except Exception as e:
         return None, {"by": "claude", "model": mid, "error": str(e)}
     if raw.get("ok") is True or not raw.get("tracks"):
@@ -202,12 +247,18 @@ def revise(plan: dict, metrics: dict, source_bars: dict[str, float], model: str 
     new, w = session.clean_plan(raw, source_bars)
     if not new["tracks"] or not any(t["guide"] for t in new["tracks"]):
         return None, {"by": "claude", "model": mid, "usage": usage, "error": "revised plan unusable"}
+    session.ensure_backbone(new, style)
+    new["style"] = style
+    new.setdefault("bed", plan.get("bed"))
     return new, {"by": "claude", "model": mid, "usage": usage, "verdict": "revised", "warnings": w}
 
 
 def guide_signature(plan: dict) -> str:
     """Changes only when what the instrumental is built around changes (so a revision can reuse the bed)."""
-    g = [[(c["at"], c["src"], c["from"], c["bars"], c.get("loop")) for c in t["clips"]] for t in plan["tracks"] if t["guide"]]
+    g = [[(c["at"], c["src"], c["from"], c["bars"], c.get("loop"), c["gain_db"] if not t["guide"] else 0,
+           json.dumps(c["fx"], sort_keys=True) if not t["guide"] else "") for c in t["clips"]
+          if t["guide"] or c["src"].startswith("kit.")] for t in plan["tracks"] if not t["mute"]]
+    g = [x for x in g if x]
     return json.dumps([g, plan["bpm"], plan.get("transpose", 0), (plan.get("bed") or {}).get("caption", "")], sort_keys=True)
 
 
@@ -223,12 +274,12 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
     each of the first two choruses, outro. Used when the AI producer isn't available."""
     drop = 8 if style == "house" else 4
     has = lambda s: s in source_bars
-    secs, tracks = [], {k: [] for k in ("lead", "drums", "bass", "music", "chops", "fx", "vox")}
+    secs, tracks = [], {k: [] for k in ("lead", "kit", "bass", "music", "chops", "fx", "vox")}
     pos = 0.0
 
-    def bed(at, bars, drums=True, bass=True, music=True, music_fx=None, drum_fx=None):
+    def bed(at, bars, drums=True, bass=True, music=True, music_fx=None, drum_fx=None, kit="kit.full"):
         if drums:
-            tracks["drums"].append({"at": at, "src": "bed.drums", "from": at, "bars": bars, "fx": drum_fx or []})
+            tracks["kit"].append({"at": at, "src": kit, "from": at, "bars": bars, "fx": drum_fx or []})
         if bass:
             tracks["bass"].append({"at": at, "src": "bed.bass", "from": at, "bars": bars})
         if music:
@@ -244,8 +295,9 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
     intro = 8
     secs.append({"name": "intro", "start": 0, "bars": intro, "energy": 0.3})
     bed(0, intro, drums=False, bass=False, music_fx=[{"type": "filter", "mode": "lp", "cutoff": [[0, 350], [1, 9000]], "resonance": 0.25}])
-    tracks["drums"].append({"at": intro / 2, "src": "bed.drums", "from": intro / 2, "bars": intro / 2,
-                            "fx": [{"type": "eq", "hp": 400}], "gain_db": -3})
+    tracks["kit"].append({"at": 0, "src": "kit.hats", "from": 0, "bars": intro})
+    tracks["kit"].append({"at": intro / 2, "src": "kit.kick", "from": intro / 2, "bars": intro / 2, "gain_db": -6,
+                          "fx": [{"type": "filter", "mode": "lp", "cutoff": [[0, 300], [1, 6000]]}]})
     if hook:
         tracks["chops"].append({"at": intro - 1, "src": "vocal", "from": hook["bar"], "bars": min(1.0, hook["bars"]),
                                 "fx": [{"type": "filter", "mode": "hp", "cutoff": 500}, {"type": "delay", "time": 0.75, "mix": 0.4}],
@@ -263,7 +315,8 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
             build_into(pos)
             bed(pos, n)
         elif kind == "verse":
-            bed(pos, n, music_fx=[{"type": "eq", "lp": 9000}])
+            bed(pos, n, music_fx=[{"type": "eq", "lp": 9000}], kit="kit.kick")
+            tracks["kit"].append({"at": pos, "src": "kit.hats", "from": pos, "bars": n})
         else:
             bed(pos, n)
             if has("chopriff"):
@@ -289,7 +342,7 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
     pos += outro
     meta = {"lead": {"group": "vocal", "guide": True, "sends": {"reverb": 0.14, "delay": 0.05},
                      "fx": [{"type": "eq", "hp": 90}, {"type": "compress", "threshold_db": -20, "ratio": 3}]},
-            "drums": {"group": "music", "role": "drums"}, "bass": {"group": "music", "role": "bass"},
+            "kit": {"group": "music", "role": "drums"}, "bass": {"group": "music", "role": "bass"},
             "music": {"group": "music"}, "chops": {"group": "chops", "sends": {"delay": 0.2, "reverb": 0.15}, "gain_db": -5},
             "fx": {"group": "fx", "sends": {"reverb": 0.2}},
             "vox": {"group": "music", "gain_db": -11, "fx": [{"type": "eq", "hp": 250, "lp": 8500}]}}
@@ -332,7 +385,27 @@ def measure(out: dict, plan: dict, sr: int) -> dict:
     quiet = [round(i * hop / bar, 1) for i in range(int(mix.shape[1] / hop)) if _db(mix[:, i * hop:(i + 1) * hop]) < -50]
     offgrid = [f"{t['id']} clip at bar {c['at']:g}" for t in plan["tracks"] if t["group"] == "vocal" and t["guide"]
                for c in t["clips"] if c["bars"] >= 1 and abs((c["at"] - c["from"]) - round(c["at"] - c["from"])) > 0.01]
-    return {"sections": secs, "energy_follows_plan": corr, "silent_bars": quiet[:20],
+    drums = groups.get("drums")
+    problems = []
+    real = [x for x in plan.get("sections", []) if int((x["start"] + x["bars"]) * bar) > int(x["start"] * bar)]
+    for s_, row in zip(real, secs):
+        a, b = int(s_["start"] * bar), int((s_["start"] + s_["bars"]) * bar)
+        if drums is not None:
+            row["drums_minus_mix_db"] = round(_db(drums[:, a:b]) - _db(mix[:, a:b]), 1)
+        if s_["energy"] >= 0.7 and (drums is None or row.get("drums_minus_mix_db", -99) < -12):
+            problems.append(f"{row['name']}: high energy but the drums are weak or missing")
+        if row.get("vocal_minus_music_db") is not None and row["vocal_minus_music_db"] < -10:
+            problems.append(f"{row['name']}: the lead vocal is buried")
+    hi = [r["loudness_db"] for r in secs if r["planned_energy"] >= 0.8]
+    lo = [r["loudness_db"] for r in secs if r["planned_energy"] <= 0.45]
+    if hi and lo and max(hi) - float(np.mean(lo)) < 3:
+        problems.append("the drops are not clearly louder and fuller than the quiet sections (under 3 dB apart)")
+    if "fx" in groups and drums is not None and _db(groups["fx"]) > _db(drums) - 3:
+        problems.append("transition sounds (fx) are as loud as the drums: turn them down or use fewer")
+    if "fx" in groups and drums is None:
+        problems.append("there are transition sounds but no drum tracks (role drums) at all")
+    problems += [f"vocal off the grid: {x}" for x in offgrid]
+    return {"problems": problems, "sections": secs, "energy_follows_plan": corr, "silent_bars": quiet[:20],
             "spectrum_share": {"low_under_150hz": share(0, 150), "mid_150_4k": share(150, 4000), "high_over_4k": share(4000, 20000)},
             "stem_levels_db": {k: _db(v) for k, v in groups.items()}, "vocal_clips_off_grid": offgrid,
             "length_seconds": round(mix.shape[1] / sr, 1), "engine_warnings": (out.get("warnings") or [])[:20]}

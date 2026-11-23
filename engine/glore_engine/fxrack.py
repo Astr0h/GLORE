@@ -396,7 +396,93 @@ def make_synth(kind: str, bars: float, sr: int, bpm: float, seed: int = 0) -> np
     else:
         raise ValueError(f"unknown synth {kind}")
     y = np.asarray(y, dtype=np.float32)
-    return (y / max(1e-6, float(np.max(np.abs(y)))) * 0.7).astype(np.float32)
+    # transitions sit behind the music: quiet by design, the plan can push them up
+    peak = {"impact": 0.4, "sub_drop": 0.45, "snare_roll": 0.35}.get(kind, 0.22)
+    return (y / max(1e-6, float(np.max(np.abs(y)))) * peak).astype(np.float32)
 
 
 SYNTHS = ("riser", "downlifter", "impact", "sub_drop", "noise_sweep", "snare_roll")
+
+
+# ---------------------------------------------------------------- drum machine (the backbone)
+
+KIT_PARTS = ("kick", "clap", "hats", "perc")
+
+
+def _hit_kick(sr, punch=1.0):
+    t = np.arange(int(0.42 * sr)) / sr
+    f = 48 + 110 * np.exp(-t * 38) * punch
+    body = np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-t * 7.5)
+    click = np.exp(-t * 900) * 0.5
+    return np.tanh((body + click) * 1.6).astype(np.float32) * 0.9
+
+
+def _hit_noise(sr, rng, dur, decay, hp, lp=None, body_hz=None):
+    n = int(dur * sr)
+    t = np.arange(n) / sr
+    x = (rng.standard_normal(n) * np.exp(-t * decay)).astype(np.float32)
+    if body_hz:
+        x += (0.5 * np.sin(2 * np.pi * body_hz * t) * np.exp(-t * decay * 1.5)).astype(np.float32)
+    chain = [pb.HighpassFilter(hp), pb.HighpassFilter(hp)] + ([pb.LowpassFilter(lp)] if lp else [])
+    return pb.Pedalboard(chain)(x[None], sr)[0]
+
+
+def _hit_clap(sr, rng):
+    n = int(0.3 * sr)
+    x = np.zeros(n, dtype=np.float32)
+    for d in (0.0, 0.011, 0.023):                      # three hands, then the tail
+        s = int(d * sr)
+        b = _hit_noise(sr, rng, 0.02, 220, 900, 3500)
+        x[s:s + len(b)] += b
+    tail = _hit_noise(sr, rng, 0.26, 22, 900, 4500)
+    x[int(0.03 * sr):int(0.03 * sr) + len(tail)] += tail[:n - int(0.03 * sr)] * 0.6
+    return x / max(1e-6, float(np.max(np.abs(x))))
+
+
+# 16 steps per bar; digits are velocity (9 = full), . = rest
+KITS = {
+    "house": {"kick": "9...9...9...9...", "clap": "....9.......9...", "hats": "..7...7...7...7.",
+              "perc": "3.5.3.5.3.5.3.53", "swing": 0.0},
+    "garage": {"kick": "9.........9.....", "clap": "....9.......9...", "hats": "..7...7...7...7.",
+               "perc": "5.35.35.5.35.353", "swing": 0.22},
+    "rnb": {"kick": "9......6..9.....", "clap": "....9.......9...", "hats": "6.6.6.6.6.6.6666",
+            "perc": "................", "swing": 0.1},
+    "gospel": {"kick": "9.......7.9.....", "clap": "....8.......8...", "hats": "5.5.5.5.5.5.5.5.",
+               "perc": "..3...3...3...3.", "swing": 0.12},
+}
+
+
+def make_kit(style: str, bars: int, sr: int, bpm: float, seed: int = 0) -> dict[str, np.ndarray]:
+    """A drum machine on the exact grid: {"kick", "clap", "hats", "perc", "full"}, each (2, n), `bars` long.
+    The hats open on the offbeat, every 8th bar ends with a small fill."""
+    rng = np.random.default_rng(seed)
+    kit = KITS.get(style, KITS["house"])
+    bar = int(round(240.0 / bpm * sr))
+    step = bar / 16
+    n = bars * bar
+    sounds = {"kick": _hit_kick(sr), "clap": _hit_clap(sr, rng),
+              "hats": _hit_noise(sr, rng, 0.16 if style in ("house", "garage") else 0.05, 28 if style in ("house", "garage") else 90, 7000),
+              "perc": _hit_noise(sr, rng, 0.04, 110, 8500)}
+    level = {"kick": 0.42, "clap": 0.32, "hats": 0.15, "perc": 0.07}   # sits right against a -20 dB vocal and bed
+    out = {}
+    for part in KIT_PARTS:
+        x = np.zeros(n + sr, dtype=np.float32)
+        snd = sounds[part]
+        for b in range(bars):
+            pat = kit[part]
+            if b % 8 == 7 and part == "clap":
+                pat = pat[:12] + "5.79"                      # fill into the next 8
+            if b % 8 == 7 and part == "kick" and style == "house":
+                pat = pat[:14] + "7."
+            for s, ch in enumerate(pat):
+                if ch == ".":
+                    continue
+                sw = kit["swing"] * step if s % 2 else 0.0
+                pos = int(b * bar + s * step + sw)
+                v = int(ch) / 9 * level[part] * (1 + 0.06 * rng.standard_normal() if part != "kick" else 1)
+                x[pos:pos + len(snd)] += snd[:len(x) - pos] * v
+        x = x[:n]
+        pan = {"hats": 0.15, "perc": -0.2}.get(part, 0.0)
+        out[part] = np.stack([x * (1 - max(0, pan)), x * (1 + min(0, pan))]).astype(np.float32)
+    out["full"] = sum(out[p] for p in KIT_PARTS).astype(np.float32)
+    return out

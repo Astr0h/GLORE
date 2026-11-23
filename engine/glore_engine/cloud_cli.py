@@ -684,7 +684,9 @@ def cmd_produce(a) -> dict:
     jid, res = render(plan, takes[:1] if how["by"] == "claude" and not a.no_revise else takes, how)
     if how["by"] == "claude" and not a.no_revise:
         metrics = next((t["metrics"] for t in res["takes"] if t.get("metrics")), {})
-        new, rhow = producer.revise(plan, metrics, source_bars, model=model)
+        for pr in metrics.get("problems", []):
+            print(f"    found: {pr}", flush=True)
+        new, rhow = producer.revise(plan, metrics, source_bars, model=model, style=style)
         print(f"  second look: {rhow.get('verdict') or rhow.get('error') or 'skipped'}", flush=True)
         if new is not None:
             vol.put_bytes(f"glore/produce/{sid}/plan2.json", json.dumps({"plan": new, "how": rhow}).encode())

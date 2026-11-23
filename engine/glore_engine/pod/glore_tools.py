@@ -271,6 +271,15 @@ def op_pmap(job, root, work, item, p):
     grid = stems.get("drums") if stems else dry
     bt = drum_beats(grid if grid is not None else dry, bpm)
     offset = float(bt[0] % (60.0 / bpm)) if len(bt) else 0.0
+    key = p.get("key")
+    if stems:  # the instruments say the key more reliably than the voice alone
+        try:
+            from glore_engine.analysis import analyse
+            harm = sum(v for k, v in stems.items() if k != "drums")
+            key = analyse(str(save(work / "harm.wav", harm)), "beat").key or key
+        except Exception as e:
+            print(f"key from the music failed ({e}); keeping {key}", flush=True)
+    p = {**p, "key": key}
     m = songmap.build(dry, SR, bpm, p.get("key"), offset, music=stems or None)
     save(d / "vocal.wav", dry)
     bars = {"vocal": m["bars"]}
@@ -278,7 +287,7 @@ def op_pmap(job, root, work, item, p):
     if riff is not None:
         save(d / "chopriff.wav", riff)
         bars["chopriff"] = 4
-    for k in ("bed.drums", "bed.bass", "bed.other", "bed.vox"):
+    for k in ("bed.bass", "bed.other", "bed.vox", "kit.full", "kit.kick", "kit.clap", "kit.hats", "kit.perc"):
         bars[k] = BED_BARS
     for k, v in stems.items():
         save(d / f"orig.{k}.wav", v)
@@ -307,6 +316,10 @@ def _psources(d: Path, plan: dict, work: Path) -> dict:
             save(g, conform(load(f), SR, meta["bpm"], bpm, 0.0 if name == "orig.drums" else tr))
         off = 0.0 if name == "chopriff" else meta["offset"] * meta["bpm"] / bpm
         out[name] = Source(load(g), off)
+    from glore_engine import fxrack
+    kit = fxrack.make_kit(plan.get("style") or "house", int(plan["bars"]) + 1, SR, bpm)
+    for part, x in kit.items():
+        out[f"kit.{part}"] = Source(x, 0.0)
     return out
 
 
@@ -315,7 +328,9 @@ def op_pguide(job, root, work, item, p):
     from glore_engine import session
     d = _pdir(root, p["sid"])
     plan = p["plan"]
-    g = session.render(plan, _psources(d, plan, work), SR, guide_only=True)
+    sources = _psources(d, plan, work)
+    session.calibrate(sources, SR)
+    g = session.render(plan, sources, SR, guide_only=True)
     path = save(d / "guide.wav", g["mix"])
     return {"guide": str(path), "duration": round(g["mix"].shape[1] / SR, 2), "warnings": g["warnings"]}
 
@@ -336,11 +351,14 @@ def op_prender(job, root, work, item, p):
         bed_dir.mkdir(parents=True, exist_ok=True)
         for k, v in parts.items():
             save(bed_dir / f"{k}.wav", load(v))
-    for k, name in (("drums", "bed.drums"), ("bass", "bed.bass"), ("other", "bed.other"), ("vocals", "bed.vox")):
+    # the bed's drum stem is the model's copy of our own kit (it was in the guide): the real kit replaces it
+    for k, name in (("bass", "bed.bass"), ("other", "bed.other"), ("vocals", "bed.vox")):
         if (bed_dir / f"{k}.wav").exists():
             sources[name] = Source(load(bed_dir / f"{k}.wav"), 0.0)
+    levels = session.calibrate(sources, SR)
     out = session.render(plan, sources, SR)
     metrics = producer.measure(out, plan, SR)
+    metrics["source_gains_db"] = levels
     song = out["mix"]
     master, mastered_to = p.get("master", "pack"), None
     if master not in ("none", None):

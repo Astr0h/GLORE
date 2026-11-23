@@ -716,7 +716,7 @@ def run_produce_job(job: dict, root: Path, ace: Ace, log, status: Status) -> dic
                 gjob = {"ace_dir": str(ace.dir), "out_dir": str(tw), "variant": variant, "caption": caption, "lora": lora,
                         "bpm": plan["bpm"], "key": meta.get("key"), "duration": g["duration"], "seed": seed, "count": 1,
                         "steps": inference["steps"], "shift": inference["shift"], "offload": False, "lm": None,
-                        "mode": "complete", "src_audio": g["guide"], "tracks": ["drums", "bass", "keyboard", "synth"],
+                        "mode": "complete", "src_audio": g["guide"], "tracks": ["bass", "keyboard", "synth"],
                         "guidance": float(t.get("guidance", 7.0)), "rewrite_caption": False}
                 (tw / "job.json").write_text(json.dumps(gjob), encoding="utf-8")
                 made = _run_tool(ace, "glore_generate.py", [str(tw / "job.json")], log)

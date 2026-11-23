@@ -91,14 +91,14 @@ def clean_plan(plan: dict, source_bars: dict[str, float] | None = None) -> tuple
                 if src[6:] not in fxrack.SYNTHS:
                     w.append(f"track {t.get('id', ti)}: no synth called {src[6:]}")
                     continue
-            elif source_bars is not None and src not in source_bars:
+            elif source_bars is not None and src not in source_bars and not src.startswith("kit."):
                 w.append(f"track {t.get('id', ti)}: no source called {src}")
                 continue
             at, bars = _num(c.get("at"), 0, 0, max_bars), _num(c.get("bars"), 1, 1 / 64, max_bars)
             if at >= max_bars:
                 continue
-            frm = _num(c.get("from"), at if src.startswith("bed.") else 0, -8)   # the bed is aligned bar for bar
-            if source_bars is not None and not src.startswith("synth:") and frm >= source_bars[src]:
+            frm = _num(c.get("from"), at if src.startswith(("bed.", "kit.")) else 0, -8)   # aligned bar for bar
+            if source_bars is not None and src in source_bars and frm >= source_bars[src]:
                 w.append(f"track {t.get('id', ti)}: clip at bar {at:g} starts past the end of {src}")
                 continue
             clip = {"at": at, "src": src, "from": frm, "bars": min(bars, max_bars - at),
@@ -141,7 +141,7 @@ def clean_plan(plan: dict, source_bars: dict[str, float] | None = None) -> tuple
            "buses": buses, "mix": {"sidechain_db": _num(mix.get("sidechain_db"), 5, 0, 18),
                                    "pocket_db": _num(mix.get("pocket_db"), 3, 0, 9)},
            "master_fx": [f for f in (plan.get("master_fx") or []) if isinstance(f, dict)][:8]}
-    for k in ("title", "notes", "key", "generate", "transpose", "caption"):
+    for k in ("title", "notes", "key", "generate", "transpose", "caption", "bed", "style"):
         if plan.get(k) is not None:
             out[k] = plan[k]
     if not tracks:
@@ -175,7 +175,8 @@ def _clip_audio(c: dict, sources: dict[str, Source], sr: int, bpm: float, w: lis
 
 
 def render(plan: dict, sources: dict[str, Source], sr: int, guide_only: bool = False) -> dict:
-    """Render a cleaned plan. guide_only: just the tracks marked guide, dry - what the beat is built around."""
+    """Render a cleaned plan. guide_only: the tracks marked guide plus every drum-machine clip, dry -
+    what the instrumental is built around."""
     from .mixing import kick_envelope, sidechain, vocal_pocket
     w: list[str] = []
     bpm = plan["bpm"]
@@ -184,10 +185,15 @@ def render(plan: dict, sources: dict[str, Source], sr: int, guide_only: bool = F
     tctx = {"bpm": bpm, "pos0": 0.0, "pos1": float(plan["bars"])}
     rendered: dict[str, np.ndarray] = {}
     for t in plan["tracks"]:
-        if t["mute"] or (guide_only and not t["guide"]):
+        if t["mute"]:
             continue
+        clips = t["clips"]
+        if guide_only and not t["guide"]:   # the instrumental is built around the lead AND the drum machine
+            clips = [c for c in clips if c["src"].startswith("kit.")]
+            if not clips:
+                continue
         buf = np.zeros((2, total), dtype=np.float32)
-        for c in t["clips"]:
+        for c in clips:
             x = _clip_audio(c, sources, sr, bpm, w)
             if x is None:
                 continue
@@ -260,3 +266,79 @@ def render(plan: dict, sources: dict[str, Source], sr: int, guide_only: bool = F
         groups[g] = groups.get(g, 0) + x * scale
     return {"mix": (mix * scale).astype(np.float32), "tracks": {i: x * scale for i, x in rendered.items()},
             "groups": groups, "warnings": w}
+
+
+def ensure_backbone(plan: dict, style: str = "house") -> list[str]:
+    """A safety net under any plan: every high-energy section gets a full drum kit if the plan left it
+    without one. A drop without drums is not a drop."""
+    added = []
+    drum_clips = [c for t in plan["tracks"] if t["role"] == "drums" and not t["mute"] for c in t["clips"]
+                  if c["src"].startswith("kit.") and c["gain_db"] > -9
+                  and not any(f.get("type") in ("filter", "eq", "telephone") for f in c["fx"])]
+    clips = []
+    for sec in plan.get("sections", []):
+        if sec["energy"] < 0.7:
+            continue
+        a, b = sec["start"], sec["start"] + sec["bars"]
+        covered = sum(max(0.0, min(b, c["at"] + c["bars"]) - max(a, c["at"])) for c in drum_clips
+                      if c["src"] in ("kit.kick", "kit.full"))
+        if covered < 0.7 * sec["bars"]:
+            clips.append({"at": a, "src": "kit.full", "from": a, "bars": sec["bars"], "gain_db": 0.0, "fx": []})
+            added.append(sec["name"])
+    if clips:
+        plan["tracks"].append({"id": "kit_backbone", "group": "music", "role": "drums", "guide": False, "mute": False,
+                               "gain_db": 0.0, "pan": 0.0, "sidechain_db": None, "pocket": None, "sends": {}, "fx": [],
+                               "clips": clips})
+    return added
+
+
+def ride(x: np.ndarray, sr: int, max_db: float = 6.0) -> np.ndarray:
+    """Even out phrase-to-phrase level (slowly, at most +-max_db), leaving the dynamics inside each phrase."""
+    hop = int(0.05 * sr)
+    m = x.mean(0)
+    frames = len(m) // hop
+    if frames < 20:
+        return x
+    rms = np.sqrt(np.mean(m[:frames * hop].reshape(frames, hop) ** 2, axis=1))
+    win = 16                                             # 0.8 s: a phrase, not a syllable
+    env = np.sqrt(np.convolve(rms ** 2, np.ones(win) / win, mode="same"))
+    active = env > 0.1 * (np.percentile(env, 95) + 1e-9)
+    if active.sum() < 10:
+        return x
+    target = np.median(env[active])
+    lim = 10 ** (max_db / 20)
+    g = np.where(active, np.clip(target / (env + 1e-9), 1 / lim, lim), np.nan)
+    idx = np.arange(frames)                              # hold the last gain through the gaps
+    good = ~np.isnan(g)
+    g = np.interp(idx, idx[good], g[good])
+    g = np.convolve(g, np.ones(win) / win, mode="same")
+    gain = np.interp(np.arange(x.shape[1]), idx * hop + hop / 2, g).astype(np.float32)
+    return (x * gain).astype(np.float32)
+
+
+def calibrate(sources: dict[str, Source], sr: int) -> dict[str, float]:
+    """Put every source at a known level so gains in a plan mean something: the vocal and the new
+    instrumental (as a whole) both land at -20 dB while they play; the original's stems likewise."""
+    def active_rms(x):
+        m = np.abs(x.mean(0))
+        thr = 0.1 * (np.percentile(m, 99) + 1e-9)
+        sel = x[:, m > thr]
+        return float(np.sqrt(np.mean(sel ** 2))) if sel.size else 0.0
+    if "vocal" in sources:  # ride the vocal like an engineer's hand on the fader: quiet lines up, loud lines down
+        sources["vocal"] = Source(ride(sources["vocal"].audio, sr), sources["vocal"].offset)
+    target, gains = 10 ** (-20 / 20), {}
+    groups = {"vocal": ["vocal"], "bed": ["bed.drums", "bed.bass", "bed.other"],
+              "orig": ["orig.drums", "orig.bass", "orig.other"], "chopriff": ["chopriff"]}
+    for g, names in groups.items():
+        have = [n for n in names if n in sources]
+        if not have:
+            continue
+        n = min(sources[k].audio.shape[1] for k in have)
+        level = active_rms(sum(sources[k].audio[:, :n] for k in have))
+        if level < 1e-5:
+            continue
+        gain = float(np.clip(target / level, 0.1, 20.0)) * (0.7 if g == "chopriff" else 1.0)
+        for k in have + (["bed.vox"] if g == "bed" and "bed.vox" in sources else []):
+            sources[k] = Source((sources[k].audio * gain).astype(np.float32), sources[k].offset)
+            gains[k] = round(20 * np.log10(gain), 1)
+    return gains

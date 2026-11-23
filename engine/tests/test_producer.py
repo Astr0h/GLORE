@@ -31,6 +31,10 @@ def world():
     src = {"vocal": Source(V), "chopriff": Source(riff), "bed.drums": Source(np.stack([kick, kick])),
            "bed.bass": Source(np.stack([0.3 * np.sin(2 * np.pi * 55 * t)] * 2).astype(np.float32)),
            "bed.other": Source(np.tile(H, 6)[:, :n])}
+    from glore_engine import fxrack
+    for part, x in fxrack.make_kit("house", 120, s.SR, s.BPM).items():
+        src[f"kit.{part}"] = Source(x)
+    session.calibrate(src, s.SR)
     bars = {k: v.bars(s.SR, s.BPM) for k, v in src.items()}
     return m, src, bars
 
@@ -55,11 +59,13 @@ def test_rule_plan_renders_as_an_arranged_song(world):
     assert not met["vocal_clips_off_grid"] and not met["silent_bars"]
     by = {x["name"]: x for x in met["sections"]}
     assert by["drop 1"]["loudness_db"] > by["intro"]["loudness_db"] + 3      # the drop is louder than the intro
+    assert by["drop 1"]["drums_minus_mix_db"] > -9 and not met["problems"]     # and it has real drums
+    assert plan["bed"]["caption"].startswith("warm and emotional") and plan["style"] == "house"
     assert met["energy_follows_plan"] > 0.5
     # the guide is the lead vocal alone, and the whole vocal is in it
     g = session.render(plan, src, s.SR, guide_only=True)
-    assert list(g["tracks"]) == ["lead"]
-    assert abs(float(np.abs(g["mix"]).sum()) / float(np.abs(V).sum()) - 1) < 0.02
+    assert list(g["tracks"]) == ["lead", "kit"]               # the beat is built around the vocal and the drums
+    assert abs(float(np.abs(g["tracks"]["lead"]).sum()) / float(np.abs(src["vocal"].audio).sum()) - 1) < 0.02
 
 
 def test_claude_plan_is_used_and_bad_replies_fall_back(world, monkeypatch):
@@ -104,6 +110,10 @@ def test_revise(world, monkeypatch):
     new, how = producer.revise(plan, {}, bars, api_key="k")
     assert how["verdict"] == "revised" and new["tracks"][0]["gain_db"] == 3
     assert producer.guide_signature(new) == producer.guide_signature(plan)   # the bed can be reused
+    moved = json.loads(json.dumps(plan))
+    kit = next(t for t in moved["tracks"] if t["id"] == "kit")
+    kit["clips"][0]["bars"] += 1
+    assert producer.guide_signature(moved) != producer.guide_signature(plan)   # drums changed: rebuild it
 
 
 def test_extract_json():
@@ -171,3 +181,40 @@ def test_bed_clips_default_to_aligned():
     p, _ = session.clean_plan({"bpm": 120, "tracks": [{"id": "d", "clips": [{"at": 8, "src": "bed.drums", "bars": 4},
                                                                            {"at": 8, "src": "vocal", "bars": 4}]}]})
     assert [c["from"] for c in p["tracks"][0]["clips"]] == [8, 0]
+
+
+def test_a_drop_without_drums_gets_a_kit_and_weak_mixes_are_flagged(world):
+    m, src, bars = world
+    raw = {"bpm": s.BPM, "bars": 16, "bed": {"caption": "deep house"},
+           "sections": [{"name": "verse", "start": 0, "bars": 8, "energy": 0.4}, {"name": "drop", "start": 8, "bars": 8, "energy": 1}],
+           "tracks": [{"id": "lead", "group": "vocal", "guide": True, "clips": [{"at": 0, "src": "vocal", "bars": 16}]},
+                      {"id": "bass", "role": "bass", "clips": [{"at": 0, "src": "bed.bass", "bars": 16}]},
+                      {"id": "fx", "group": "fx", "clips": [{"at": 6, "src": "synth:riser", "bars": 2, "gain_db": 12}]}]}
+    plan, _ = session.clean_plan(json.loads(json.dumps(raw)), bars)
+    assert plan["bed"] == {"caption": "deep house"}                       # the producer's caption reaches the generator
+    met = producer.measure(session.render(plan, src, s.SR), plan, s.SR)
+    assert any("drop: high energy but the drums are weak" in p for p in met["problems"])
+    assert any("no drum tracks" in p for p in met["problems"])
+    assert session.ensure_backbone(plan) == ["drop"]
+    out = session.render(plan, src, s.SR)
+    met = producer.measure(out, plan, s.SR)
+    assert not any("drums" in p for p in met["problems"]) and met["sections"][1]["drums_minus_mix_db"] > -9
+    assert session.ensure_backbone(plan) == []                             # already covered: nothing more added
+
+
+def test_sources_are_level_matched():
+    from glore_engine import fxrack
+    t = np.arange(s.SR * 8) / s.SR
+    quiet = np.stack([0.01 * np.sin(2 * np.pi * 220 * t)] * 2).astype(np.float32)
+    loud = np.stack([0.8 * np.sin(2 * np.pi * 110 * t)] * 2).astype(np.float32)
+    src = {"vocal": Source(quiet), "bed.bass": Source(loud), "bed.other": Source(loud * 0.5), "bed.vox": Source(loud)}
+    gains = session.calibrate(src, s.SR)
+    db = lambda x: 20 * np.log10(np.sqrt(np.mean(x ** 2)))
+    assert abs(db(src["vocal"].audio) + 20) < 0.5 and abs(db(src["bed.bass"].audio + src["bed.other"].audio) + 20) < 0.5
+    assert gains["vocal"] > 20 and gains["bed.bass"] == gains["bed.other"] == gains["bed.vox"] < 0
+    kit = fxrack.make_kit("house", 4, s.SR, 124)
+    bar = int(round(240 / 124 * s.SR))
+    assert set(kit) == {"kick", "clap", "hats", "perc", "full"} and kit["full"].shape == (2, 4 * bar)
+    k = np.abs(kit["kick"][0])
+    assert all(k[int(b * bar / 4):int(b * bar / 4) + 400].max() > 0.3 for b in range(16))   # four on the floor
+    assert -24 < db(kit["full"]) < -13                                                       # sits with a -20 dB vocal

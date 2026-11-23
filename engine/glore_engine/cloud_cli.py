@@ -507,6 +507,13 @@ def cmd_gpus(a) -> dict:
     return {"gpus": rows}
 
 
+def cmd_show(a) -> dict:
+    """Print a (text) file from the volume, e.g. a producer plan."""
+    raw = manager().volume().get_bytes(a.key)
+    print(raw.decode("utf-8", "replace") if raw else f"(nothing at {a.key})")
+    return {}
+
+
 def cmd_queue(a) -> dict:
     """Jobs waiting for a pod. --drop <id> (or 'all') removes them."""
     vol = manager().volume()
@@ -1123,6 +1130,8 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--key")
     pr.add_argument("--days", type=float, default=7)
     sub.add_parser("gpus")
+    sh = sub.add_parser("show")
+    sh.add_argument("--key", required=True)
     qu = sub.add_parser("queue")
     qu.add_argument("--drop")
     lb = sub.add_parser("library")
@@ -1185,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
          "loras": cmd_loras, "stop": cmd_stop, "check": cmd_check, "du": cmd_du, "publish-state": cmd_publish_state, "grow": cmd_grow, "log": cmd_log, "song": cmd_song,
                 "import": cmd_import, "link": cmd_link, "library": cmd_library,
                 "tool": cmd_tool, "queue": cmd_queue, "probe": cmd_probe, "gpus": cmd_gpus,
-                "produce": cmd_produce}[a.cmd](a)
+                "produce": cmd_produce, "show": cmd_show}[a.cmd](a)
         return 0
     except CloudError as e:
         print(f"ERROR: {e}", file=sys.stderr)

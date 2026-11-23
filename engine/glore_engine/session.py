@@ -301,6 +301,21 @@ def ensure_backbone(plan: dict, style: str = "house") -> list[str]:
         plan["tracks"].append({"id": "bass_backbone", "group": "music", "role": "bass", "guide": False, "mute": False,
                                "gain_db": 0.0, "pan": 0.0, "sidechain_db": 6.0, "pocket": None, "sends": {}, "fx": [],
                                "clips": bclips})
+    harm_clips = [c for t in plan["tracks"] if not t["mute"] for c in t["clips"]
+                  if c["src"] in ("kit.keys", "kit.pad") and c["gain_db"] > -12]
+    hclips = []
+    for sec in plan.get("sections", []):
+        if sec["energy"] < 0.7:
+            continue
+        a, b = sec["start"], sec["start"] + sec["bars"]
+        covered = sum(max(0.0, min(b, c["at"] + c["bars"]) - max(a, c["at"])) for c in harm_clips)
+        if covered < 0.5 * sec["bars"]:
+            hclips.append({"at": a, "src": "kit.keys", "from": a, "bars": sec["bars"], "gain_db": 0.0, "fx": []})
+            added.append(f"{sec['name']} (chords)")
+    if hclips:
+        plan["tracks"].append({"id": "keys_backbone", "group": "music", "role": "", "guide": False, "mute": False,
+                               "gain_db": 0.0, "pan": 0.0, "sidechain_db": None, "pocket": None, "sends": {}, "fx": [],
+                               "clips": hclips})
     if clips:
         plan["tracks"].append({"id": "kit_backbone", "group": "music", "role": "drums", "guide": False, "mute": False,
                                "gain_db": 0.0, "pan": 0.0, "sidechain_db": None, "pocket": None, "sends": {}, "fx": [],

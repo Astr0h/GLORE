@@ -35,6 +35,8 @@ def world():
     for part, x in fxrack.make_kit("house", 120, s.SR, s.BPM).items():
         src[f"kit.{part}"] = Source(x)
     src["kit.bass"] = Source(fxrack.make_bass([9, 5, 0, 7] * 30, "house", s.SR, s.BPM))
+    for kind in ("keys", "pad"):
+        src[f"kit.{kind}"] = Source(fxrack.make_chords([21, 5, 0, 7] * 30, "house", s.SR, s.BPM, kind))
     session.calibrate(src, s.SR)
     bars = {k: v.bars(s.SR, s.BPM) for k, v in src.items()}
     return m, src, bars
@@ -65,7 +67,7 @@ def test_rule_plan_renders_as_an_arranged_song(world):
     assert met["energy_follows_plan"] > 0.5
     # the guide is the lead vocal alone, and the whole vocal is in it
     g = session.render(plan, src, s.SR, guide_only=True)
-    assert list(g["tracks"]) == ["lead", "kit", "bass"]       # built around the vocal, the drums and the bassline
+    assert list(g["tracks"]) == ["lead", "kit", "bass", "keys"]   # built around the vocal, drums, bass and chords
     assert abs(float(np.abs(g["tracks"]["lead"]).sum()) / float(np.abs(src["vocal"].audio).sum()) - 1) < 0.02
 
 
@@ -196,7 +198,7 @@ def test_a_drop_without_drums_gets_a_kit_and_weak_mixes_are_flagged(world):
     met = producer.measure(session.render(plan, src, s.SR), plan, s.SR)
     assert any("drop: high energy but the drums are weak" in p for p in met["problems"])
     assert any("no drum tracks" in p for p in met["problems"])
-    assert session.ensure_backbone(plan) == ["drop", "drop (bass)"]
+    assert session.ensure_backbone(plan) == ["drop", "drop (bass)", "drop (chords)"]
     out = session.render(plan, src, s.SR)
     met = producer.measure(out, plan, s.SR)
     assert not any("drums" in p or "bass" in p for p in met["problems"]) and met["sections"][1]["drums_minus_mix_db"] > -9
@@ -251,3 +253,23 @@ def test_bass_follows_the_songs_harmony(world):
     k = np.abs(fxrack.make_kit("house", 2, s.SR, s.BPM)["kick"][0])
     beat = int(s.BEAT * s.SR)
     assert np.abs(x[0][:int(0.1 * s.SR)]).max() < 0.01              # silent on the kick: the offbeat pump
+
+
+def test_chord_machine_plays_the_songs_chords():
+    import librosa
+    from glore_engine import fxrack
+    for kind in ("keys", "pad"):
+        x = fxrack.make_chords([21, 21, 5, 5], "house", s.SR, s.BPM, kind)       # Am Am F F
+        y = librosa.resample(x.mean(0), orig_sr=s.SR, target_sr=22050)
+        c = librosa.feature.chroma_cqt(y=y, sr=22050)
+        half = c.shape[1] // 2
+        top = lambda seg: set(np.argsort(seg.mean(1))[-3:])
+        assert top(c[:, :half]) == {9, 0, 4} and top(c[:, half:]) == {5, 9, 0}, kind
+    # major vs minor heard from the original's instruments, whatever the key says
+    t = np.arange(int(4 * s.BAR * s.SR)) / s.SR
+    tri = lambda ms: sum(np.sin(2 * np.pi * 440 * 2 ** ((m - 69) / 12) * t) for m in ms)
+    bar = int(s.BAR * s.SR)
+    h = np.concatenate([tri([57, 60, 64])[:2 * bar], tri([53, 57, 60])[:2 * bar]]).astype(np.float32) * 0.2
+    got = songmap.bar_chords([9, 9, 5, 5], np.stack([h, h]), s.SR, s.BPM, 0.0, "C# major")
+    assert got == [21, 21, 5, 5]
+    assert songmap.bar_chords([9, 5], None, s.SR, s.BPM, 0.0, "A minor") == [21, 5]

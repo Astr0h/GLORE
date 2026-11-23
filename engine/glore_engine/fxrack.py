@@ -522,3 +522,68 @@ def make_bass(roots: list[int | None], style: str, sr: int, bpm: float) -> np.nd
             x[pos:pos + L] += (note * 0.32).astype(np.float32)[:len(x) - pos]
     x = x[:n]
     return np.stack([x, x]).astype(np.float32)
+
+
+# ---------------------------------------------------------------- chord machine
+
+STAB_PATTERNS = {   # 16 steps per bar: x = chord stab
+    "house": "..x...x...x..x..",       # offbeat piano stabs
+    "garage": "x..x..x...x..x..",
+    "rnb": "x.......x.......",
+    "gospel": "x...x...x...x...",
+}
+
+
+def _voicing(chord: int, low: int = 55) -> list[int]:
+    """chord = root pitch class + 12 if minor. A close triad (plus the root on top), just above `low`."""
+    root, minor = chord % 12, chord >= 12
+    third = 3 if minor else 4
+    r = low + (root - low) % 12
+    return [r, r + third, r + 7, r + 12]
+
+
+def make_chords(chords: list[int], style: str, sr: int, bpm: float, kind: str = "keys") -> np.ndarray:
+    """kind="keys": a warm electric-piano stab in the style's rhythm. kind="pad": sustained, slow-attack
+    detuned saws, filtered. One chord per bar."""
+    bar = int(round(240.0 / bpm * sr))
+    step = bar / 16
+    n = len(chords) * bar
+    out = np.zeros((2, n + sr), dtype=np.float32)
+    if kind == "pad":
+        t = np.arange(bar) / sr
+        for b, ch in enumerate(chords):
+            seg = np.zeros((2, bar), dtype=np.float32)
+            for i, m in enumerate(_voicing(ch, 52)):
+                f = 440 * 2 ** ((m - 69) / 12)
+                for side, det in ((0, 0.996), (1, 1.004)):
+                    seg[side] += (2 * ((t * f * det + i * 0.13) % 1.0) - 1).astype(np.float32)
+            k = int(0.03 * sr)
+            env = np.ones(bar, dtype=np.float32)
+            env[:k] = np.linspace(0, 1, k)
+            env[-k:] = np.linspace(1, 0, k)
+            out[:, b * bar:(b + 1) * bar] += seg * env * 0.05
+        x = pb.Pedalboard([pb.LowpassFilter(1800), pb.HighpassFilter(160),
+                           pb.Chorus(rate_hz=0.3, depth=0.25, mix=0.4),
+                           pb.Reverb(room_size=0.7, wet_level=0.3, dry_level=0.8)])(out[:, :n], sr)
+        return x.astype(np.float32)
+    pat = STAB_PATTERNS.get(style, STAB_PATTERNS["house"])
+    L = int(step * (1.6 if style in ("house", "garage") else 3.5))
+    t = np.arange(L) / sr
+    env = np.minimum(1, t * 400) * np.exp(-t * (9 if style in ("house", "garage") else 4))
+    cache = {}
+    for b, ch in enumerate(chords):
+        if ch not in cache:
+            note = np.zeros(L, dtype=np.float32)
+            for m in _voicing(ch):
+                f = 440 * 2 ** ((m - 69) / 12)
+                ph = 2 * np.pi * f * t
+                # electric piano: a sine with a bell overtone that fades faster
+                note += (np.sin(ph) + 0.25 * np.sin(2 * ph) * np.exp(-t * 6) + 0.12 * np.sin(3.5 * ph) * np.exp(-t * 14))
+            cache[ch] = (note * env * 0.07).astype(np.float32)
+        for s, c in enumerate(pat):
+            if c == "x":
+                pos = int(b * bar + s * step)
+                out[0, pos:pos + L] += cache[ch][:out.shape[1] - pos] * 0.95
+                out[1, pos:pos + L] += cache[ch][:out.shape[1] - pos] * 1.05
+    x = pb.Pedalboard([pb.HighpassFilter(150), pb.Reverb(room_size=0.45, wet_level=0.2, dry_level=0.9)])(out[:, :n], sr)
+    return x.astype(np.float32)

@@ -52,7 +52,9 @@ revision rebuilds the bed.
 The "kit.*" sources are a drum machine locked to the grid over the whole timeline (kit.kick, kit.clap, kit.hats, \
 kit.perc, or kit.full for all four), in the pack's style. They are the only drums: build the whole groove from them, part by part. Put kit tracks in group "music" with \
 role "drums". "kit.bass" is the bassline (role "bass"): it follows the song's harmony and ducks to the kick. The \
-generated bed.bass is usually faint - use kit.bass as THE bass and bed.bass, if at all, as a layer.
+generated bed.bass is usually faint - use kit.bass as THE bass and bed.bass, if at all, as a layer. "kit.keys" (piano \
+stabs) and "kit.pad" (sustained pad) play the song's own chords: the generated bed.other is usually quiet, so the \
+chords carry the harmony - pad under intros, verses and breakdowns, keys (with or without the pad) in the drops.
 All sources are level-matched (vocal, bed and kit sit together at gain 0), so gain_db is a real mix decision: 0 is \
 "at full level", -6 clearly back, -12 background.
 
@@ -131,6 +133,8 @@ def describe_sources(source_bars: dict[str, float]) -> str:
              "chopriff": "a ready-made vocal-chop riff from the song's own melody, loopable",
              "bed.bass": "new instrumental: bass",
              "bed.other": "new instrumental: chords, synths, keys", "bed.vox": "the model's own vocal-like textures (use low, in gaps)",
+             "kit.keys": "chord machine: warm electric-piano stabs on the song's own chords, in the style's rhythm",
+             "kit.pad": "chord machine: a sustained, filtered pad on the song's own chords",
              "kit.bass": "bass machine: a sub bassline on the grid that follows the song's chord roots under your arrangement",
              "kit.full": "drum machine: kick, clap, hats and perc together, on the grid",
              "kit.kick": "drum machine: kick", "kit.clap": "drum machine: clap / snare",
@@ -276,7 +280,7 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
     each of the first two choruses, outro. Used when the AI producer isn't available."""
     drop = 8 if style == "house" else 4
     has = lambda s: s in source_bars
-    secs, tracks = [], {k: [] for k in ("lead", "kit", "bass", "music", "chops", "fx", "vox")}
+    secs, tracks = [], {k: [] for k in ("lead", "kit", "bass", "keys", "music", "chops", "fx", "vox")}
     pos = 0.0
 
     def bed(at, bars, drums=True, bass=True, music=True, music_fx=None, drum_fx=None, kit="kit.full"):
@@ -284,6 +288,8 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
             tracks["kit"].append({"at": at, "src": kit, "from": at, "bars": bars, "fx": drum_fx or []})
         if bass:
             tracks["bass"].append({"at": at, "src": "kit.bass", "from": at, "bars": bars})
+        if music:
+            tracks["keys"].append({"at": at, "src": "kit.keys" if drums and bass else "kit.pad", "from": at, "bars": bars})
         if music:
             tracks["music"].append({"at": at, "src": "bed.other", "from": at, "bars": bars, "fx": music_fx or []})
         if has("bed.vox"):
@@ -344,7 +350,7 @@ def default_plan(m: dict, brief: str, style: str, source_bars: dict[str, float],
     pos += outro
     meta = {"lead": {"group": "vocal", "guide": True, "sends": {"reverb": 0.14, "delay": 0.05},
                      "fx": [{"type": "eq", "hp": 90}, {"type": "compress", "threshold_db": -20, "ratio": 3}]},
-            "kit": {"group": "music", "role": "drums"}, "bass": {"group": "music", "role": "bass"},
+            "kit": {"group": "music", "role": "drums"}, "keys": {"group": "music"}, "bass": {"group": "music", "role": "bass"},
             "music": {"group": "music"}, "chops": {"group": "chops", "sends": {"delay": 0.2, "reverb": 0.15}, "gain_db": -5},
             "fx": {"group": "fx", "sends": {"reverb": 0.2}},
             "vox": {"group": "music", "gain_db": -11, "fx": [{"type": "eq", "hp": 250, "lp": 8500}]}}

@@ -93,8 +93,13 @@ def build(vocal: np.ndarray, sr: int, bpm: float, key: str | None, offset: float
          "sung_notes": sorted({int(round(n.midi)) % 12 for n in notes})}
     roots = bar_roots(music.get("bass") if music else None, notes, sr, bpm, offset, n_bars, key)
     first_chorus = regions[0][0] if regions else 0
+    harm = sum(v for k, v in music.items() if k not in ("drums", "bass")) if music else None
+    chords_pb = bar_chords(roots, harm, sr, bpm, offset, key)
     m["roots"] = roots
     m["root_cycle"] = roots[first_chorus:first_chorus + 4] or roots[:4]
+    m["chords_per_bar"] = [chops.NOTES[c % 12] + ("m" if c >= 12 else "") for c in chords_pb]
+    m["_chords"] = chords_pb
+    m["_chord_cycle"] = chords_pb[first_chorus:first_chorus + 4] or chords_pb[:4]
     m["bass_notes"] = "roots per bar as pitch classes (0 = C); the kit.bass line follows them wherever the lead plays"
     if music:
         harm = sum(v for k, v in music.items() if k != "drums")
@@ -142,6 +147,26 @@ def bar_roots(bass: np.ndarray | None, vocal_notes: list, sr: int, bpm: float, o
             roots[i] = last
         last = roots[i]
     return roots
+
+
+def bar_chords(roots: list[int], harmony: np.ndarray | None, sr: int, bpm: float, offset: float,
+               key: str | None) -> list[int]:
+    """Each bar's chord as root + 12 if minor. With the original's instruments, major/minor is heard from
+    them (no key needed); otherwise it's taken from the key's own chords."""
+    bar_s = 240.0 / bpm
+    if harmony is not None and float(np.max(np.abs(harmony))) > 1e-4:
+        import librosa
+        y = chops._mono(harmony, sr)
+        chroma = librosa.feature.chroma_cqt(y=y, sr=chops.ASR, hop_length=512)
+        fps = chops.ASR / 512
+        out = []
+        for b, r in enumerate(roots):
+            a, e = int((offset + b * bar_s) * fps), int((offset + (b + 1) * bar_s) * fps)
+            c = chroma[:, a:e].mean(1) if e > a and a < chroma.shape[1] else np.ones(12)
+            out.append(r + (12 if c[(r + 3) % 12] > c[(r + 4) % 12] else 0))
+        return out
+    dia = dict(chops.diatonic_triads(key))
+    return [r + (12 if dia.get(r, "m" if chops.parse_key(key)[1] == "minor" else "") == "m" else 0) for r in roots]
 
 
 def plan_roots(plan: dict, roots: list[int], default_cycle: list[int] | None = None) -> list[int]:

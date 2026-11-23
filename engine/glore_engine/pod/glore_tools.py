@@ -287,13 +287,13 @@ def op_pmap(job, root, work, item, p):
     if riff is not None:
         save(d / "chopriff.wav", riff)
         bars["chopriff"] = 4
-    for k in ("bed.bass", "bed.other", "bed.vox", "kit.bass", "kit.full", "kit.kick", "kit.clap", "kit.hats", "kit.perc"):
+    for k in ("bed.bass", "bed.other", "bed.vox", "kit.bass", "kit.keys", "kit.pad", "kit.full", "kit.kick", "kit.clap", "kit.hats", "kit.perc"):
         bars[k] = BED_BARS
     for k, v in stems.items():
         save(d / f"orig.{k}.wav", v)
         bars[f"orig.{k}"] = m["bars"]
     meta = {"bpm": bpm, "key": p.get("key"), "offset": offset, "source_bars": bars, "roots": m["roots"],
-            "root_cycle": m["root_cycle"]}
+            "root_cycle": m["root_cycle"], "chords": m.pop("_chords"), "chord_cycle": m.pop("_chord_cycle")}
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     (d / "songmap.json").write_text(json.dumps(m), encoding="utf-8")
     return {"songmap": m, "source_bars": bars, "sid": p["sid"]}
@@ -326,6 +326,12 @@ def _psources(d: Path, plan: dict, work: Path) -> dict:
         tr = int(round(float(plan.get("transpose") or 0)))
         roots = [(r + tr) % 12 for r in plan_roots(plan, meta["roots"], meta.get("root_cycle"))]
         out["kit.bass"] = Source(fxrack.make_bass(roots, plan.get("style") or "house", SR, bpm), 0.0)
+    if meta.get("chords"):
+        from glore_engine.songmap import plan_roots
+        tr = int(round(float(plan.get("transpose") or 0)))
+        ch = [(c % 12 + tr) % 12 + (12 if c >= 12 else 0) for c in plan_roots(plan, meta["chords"], meta.get("chord_cycle"))]
+        for kind in ("keys", "pad"):
+            out[f"kit.{kind}"] = Source(fxrack.make_chords(ch, plan.get("style") or "house", SR, bpm, kind), 0.0)
     return out
 
 
@@ -365,6 +371,16 @@ def op_prender(job, root, work, item, p):
     out = session.render(plan, sources, SR)
     metrics = producer.measure(out, plan, SR)
     metrics["source_gains_db"] = levels
+    sh = metrics["spectrum_share"]   # a boomy, dull mix gets a gentle tilt before mastering
+    tilt = []
+    if sh["low_under_150hz"] > 0.4:
+        tilt.append({"type": "eq", "low_db": -min(4.0, 10 * (sh["low_under_150hz"] - 0.35)), "low_hz": 140})
+    if sh["high_over_4k"] < 0.08:
+        tilt.append({"type": "eq", "high_db": min(4.0, 40 * (0.08 - sh["high_over_4k"]) + 1.5), "high_hz": 5000})
+    if tilt:
+        from glore_engine.fxrack import apply_fx
+        out["mix"] = apply_fx(out["mix"], SR, tilt, {"bpm": plan["bpm"]})
+        metrics["tone_fix"] = tilt
     song = out["mix"]
     master, mastered_to = p.get("master", "pack"), None
     if master not in ("none", None):

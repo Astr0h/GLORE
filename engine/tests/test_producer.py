@@ -153,3 +153,21 @@ def test_cloud_tools_map_guide_and_render_for_real(tmp_path, monkeypatch):
     names = zipfile.ZipFile(out["zip"]).namelist()
     assert "Song - lead.wav" in names and "Song - plan.json" in names and "Song - master.wav" in names
     assert (root / "glore" / "produce" / "abc" / "conf_126_0" / "vocal.wav").exists()
+
+
+def test_read_stream():
+    ev = lambda d: ("data: " + json.dumps(d)).encode()
+    lines = [b"event: message_start", ev({"type": "message_start", "message": {"usage": {"input_tokens": 9}}}),
+             ev({"type": "content_block_delta", "delta": {"type": "text_delta", "text": '{"a"'}}), b"", b"data: [junk",
+             ev({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "hmm"}}),
+             ev({"type": "content_block_delta", "delta": {"type": "text_delta", "text": ": 1}"}}),
+             ev({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}})]
+    assert producer.read_stream(lines) == ('{"a": 1}', "end_turn", {"input_tokens": 9, "output_tokens": 5})
+    with pytest.raises(RuntimeError, match="overloaded"):
+        producer.read_stream([ev({"type": "error", "error": {"message": "overloaded"}})])
+
+
+def test_bed_clips_default_to_aligned():
+    p, _ = session.clean_plan({"bpm": 120, "tracks": [{"id": "d", "clips": [{"at": 8, "src": "bed.drums", "bars": 4},
+                                                                           {"at": 8, "src": "vocal", "bars": 4}]}]})
+    assert [c["from"] for c in p["tracks"][0]["clips"]] == [8, 0]

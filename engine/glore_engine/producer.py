@@ -75,7 +75,8 @@ gate pattern("x.x.x..x........" 16ths) | autopan rate(beats),depth | pump depth_
 vocoder notes[midi]|per_bar[[midi]],mix | reverse | stutter slice(beats),length(beats) | tape_stop beats |
 octave_up mix | octave_down mix
 
-# Output: ONE JSON object, nothing else
+# Output: ONE JSON object, nothing else - no commentary before or after
+Write it compactly: no indentation, leave out any field that is at its default (from 0 - or from = at for "bed.*" clips - gain_db 0, empty fx, fades 0). One clip per continuous region: a stem that plays unchanged for 32 bars is one clip, not eight. Spend clips where the ideas are. A full song is typically 60-200 clips.
 {{"title": "short name", "notes": "2-4 plain sentences for the artist: what you did and why",
  "bpm": 126, "transpose": 0, "bars": 96,
  "bed": {{"caption": "tags for the instrumental"}},
@@ -119,20 +120,44 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[a:b + 1])
 
 
-def ask(system: str, user: str, model: str, api_key: str, max_tokens: int = 20000, timeout: float = 600) -> tuple[dict, dict]:
-    body = {"model": model, "max_tokens": max_tokens, "system": system,
+def read_stream(lines) -> tuple[str, str | None, dict]:
+    """Collect the text of a streamed Messages reply. Returns (text, stop_reason, usage)."""
+    text, stop, usage = [], None, {}
+    for raw in lines:
+        line = raw.decode("utf-8", "replace").strip() if isinstance(raw, bytes) else raw.strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            ev = json.loads(line[5:].strip())
+        except json.JSONDecodeError:
+            continue
+        kind = ev.get("type")
+        if kind == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
+            text.append(ev["delta"].get("text", ""))
+        elif kind == "message_start":
+            usage.update(ev.get("message", {}).get("usage") or {})
+        elif kind == "message_delta":
+            stop = ev.get("delta", {}).get("stop_reason") or stop
+            usage.update(ev.get("usage") or {})
+        elif kind == "error":
+            raise RuntimeError(f"Anthropic API: {ev.get('error', {}).get('message', ev)}")
+    return "".join(text), stop, usage
+
+
+def ask(system: str, user: str, model: str, api_key: str, max_tokens: int = 48000, timeout: float = 900) -> tuple[dict, dict]:
+    """One streamed call (plans are long; streaming keeps the connection alive)."""
+    body = {"model": model, "max_tokens": max_tokens, "system": system, "stream": True,
             "messages": [{"role": "user", "content": user}]}
     req = urllib.request.Request(API, data=json.dumps(body).encode(), method="POST", headers={
         "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read())
+            text, stop, usage = read_stream(r)
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Anthropic API {e.code}: {e.read()[:300].decode(errors='replace')}") from e
-    if data.get("stop_reason") == "max_tokens":
-        raise RuntimeError("the plan was cut off (too long)")
-    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-    return _extract_json(text), data.get("usage", {})
+    if stop == "max_tokens":
+        raise RuntimeError(f"the plan was cut off (over {max_tokens} tokens)")
+    return _extract_json(text), usage
 
 
 def make_plan(songmap: dict, brief: str, source_bars: dict[str, float], style: str = "house",

@@ -659,6 +659,8 @@ def cmd_produce(a) -> dict:
     plan, how = producer.make_plan(songmap, brief, source_bars, style, model=model, seed=int(takes[0].get("seed", 0)))
     print(f"  plan by {how['by']}" + (f" ({how.get('model')})" if how.get("model") else "")
           + (f"; AI producer unavailable: {how['error']}" if how.get("error") else "") + f": {plan.get('title', '')}", flush=True)
+    if how.get("usage"):
+        print(f"    tokens: {how['usage'].get('input_tokens')} in, {how['usage'].get('output_tokens')} out", flush=True)
     for w in how.get("warnings", [])[:10]:
         print(f"    note: {w}")
     vol.put_bytes(f"glore/produce/{sid}/plan1.json", json.dumps({"plan": plan, "how": how, "brief": brief}).encode())

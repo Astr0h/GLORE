@@ -97,7 +97,7 @@ def clean_plan(plan: dict, source_bars: dict[str, float] | None = None) -> tuple
             at, bars = _num(c.get("at"), 0, 0, max_bars), _num(c.get("bars"), 1, 1 / 64, max_bars)
             if at >= max_bars:
                 continue
-            frm = _num(c.get("from"), 0, -8)
+            frm = _num(c.get("from"), at if src.startswith("bed.") else 0, -8)   # the bed is aligned bar for bar
             if source_bars is not None and not src.startswith("synth:") and frm >= source_bars[src]:
                 w.append(f"track {t.get('id', ti)}: clip at bar {at:g} starts past the end of {src}")
                 continue
